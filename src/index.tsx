@@ -10,17 +10,22 @@ import { z } from "zod"
 type NutritionEntry = { date: string; nutrients: Record<string, number>; notes?: string; updatedAt: string }
 type WorkoutSet = { reps?: number; weight?: number; durationMinutes?: number; distance?: number; notes?: string }
 type WorkoutEntry = { id: string; date: string; category?: string; machine?: string; workout: string; sets: WorkoutSet[]; notes?: string; updatedAt: string }
-type DbSchema = { nutrition: Record<string, NutritionEntry>; workouts: WorkoutEntry[]; clients: Record<string, { clientId: string; clientName?: string; createdAt: string }> }
+type RecipeItem = { id: string; name: string; serving: string; nutrients: Record<string, number>; notes?: string; createdAt: string; updatedAt: string }
+type LogDbSchema = { nutrition: Record<string, NutritionEntry>; workouts: WorkoutEntry[]; clients: Record<string, { clientId: string; clientName?: string; createdAt: string }> }
+type RecipeDbSchema = { items: RecipeItem[] }
 
 const app = new Hono()
 const dataPath = process.env.DATA_PATH ?? "./data/state.json"
+const recipesDataPath = process.env.RECIPES_DATA_PATH ?? "./data/recipes.json"
 const publicBaseUrl = process.env.PUBLIC_BASE_URL ?? "https://fitcheck.dev.prettybird.zapplebee.online"
 const accessToken = process.env.FITCHECK_ACCESS_TOKEN ?? "fitcheck-dev-token"
 const githubToken = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN
 const githubRepository = process.env.GITHUB_REPOSITORY ?? "zapplebee/fitcheck"
 const port = Number(process.env.PORT ?? "3000")
 await mkdir(dirname(dataPath), { recursive: true })
-const db = await JSONFilePreset<DbSchema>(dataPath, { nutrition: {}, workouts: [], clients: {} })
+await mkdir(dirname(recipesDataPath), { recursive: true })
+const db = await JSONFilePreset<LogDbSchema>(dataPath, { nutrition: {}, workouts: [], clients: {} })
+const recipesDb = await JSONFilePreset<RecipeDbSchema>(recipesDataPath, { items: [] })
 
 app.use("*", async (c, next) => {
   const started = performance.now()
@@ -29,6 +34,7 @@ app.use("*", async (c, next) => {
 })
 
 app.get("/", (c) => c.html(<Page />))
+app.get("/recipes", (c) => c.html(<Page title="Recipes" />))
 app.get("/client.js", async (c) => c.body(await Bun.file("./public/client.js").text(), 200, { "content-type": "application/javascript; charset=utf-8", "cache-control": "no-cache" }))
 app.get("/health", (c) => c.json({ ok: true, service: "fitcheck" }))
 
@@ -58,6 +64,7 @@ app.post("/token", (c) => c.json({ access_token: accessToken, token_type: "Beare
 
 app.get("/api/state", async (c) => c.json(await getState()))
 app.get("/api/summary", async (c) => c.json(await summary()))
+app.get("/api/recipes", async (c) => c.json(await getItems()))
 
 app.use("/mcp", async (c, next) => {
   const auth = c.req.header("authorization")
@@ -77,13 +84,13 @@ app.all("/mcp", async (c) => {
 Bun.serve({ fetch: app.fetch, hostname: "0.0.0.0", port })
 console.log(`fitcheck listening on 0.0.0.0:${port}`)
 
-function Page() {
+function Page(props: { title?: string } = {}) {
   return (
     <html lang="en">
       <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>Fitcheck</title>
+        <title>{props.title ? `${props.title} / Fitcheck` : "Fitcheck"}</title>
         <style>{styles}</style>
       </head>
       <body>
@@ -92,6 +99,7 @@ function Page() {
             <p class="eyebrow">fitcheck / mcp body ledger</p>
             <h1>Fitcheck.</h1>
             <p class="lede">Today, rolling nutrition, and training pattern.</p>
+            <nav class="nav"><a href="/">dashboard</a><a href="/recipes">recipes</a></nav>
             <div class="rule" />
             <div id="fitcheck-app" class="widget-shell"><p>Fitcheck loading...</p></div>
           </section>
@@ -109,6 +117,7 @@ function createMcpServer(): McpServer {
   registerJsonTool(server, "upsert_nutrition", "Upsert nutrition attributes for one day. Nutrients are expandable keys such as calories, protein, carbs, fat, fiber, sodium, etc.", { date: dateSchema, nutrients: z.record(z.string().min(1), z.number()), notes: z.string().optional() }, async (args) => upsertNutrition(args.date, args.nutrients, args.notes))
   registerJsonTool(server, "upsert_workout", "Upsert a workout entry for a day by optional id. Use category such as upper, lower, cardio, mobility, full-body. Sets may include reps, weight, durationMinutes, distance, and notes.", { id: z.string().optional(), date: dateSchema, category: z.string().optional(), machine: z.string().optional(), workout: z.string().min(1), sets: z.array(workoutSetSchema).default([]), notes: z.string().optional() }, async (args) => upsertWorkout(args))
   registerJsonTool(server, "delete_workout", "Delete one workout by id.", { id: z.string().min(1) }, async ({ id }) => deleteWorkout(id))
+  registerJsonTool(server, "add_item", "Create a reusable recipe or food item with a generated GUID and nutrition-label values. This stores the definition for review in /recipes; it does not log daily intake.", { name: z.string().min(1), serving: z.string().min(1).default("1 serving"), nutrients: z.record(z.string().min(1), z.number()), notes: z.string().optional() }, async (args) => addItem(args.name, args.serving, args.nutrients, args.notes))
   registerJsonTool(server, "list_github_issues", "List open GitHub issues for Fitcheck so agents can avoid duplicate bug reports and feature requests.", { state: z.enum(["open", "closed", "all"]).default("open"), labels: z.string().optional(), per_page: z.number().int().min(1).max(100).default(30) }, async (args) => githubIssueRequest("GET", `/issues?state=${encodeURIComponent(args.state)}&per_page=${args.per_page}${args.labels ? `&labels=${encodeURIComponent(args.labels)}` : ""}`))
   registerJsonTool(server, "create_github_issue", "Create a GitHub issue for a Fitcheck bug report or feature request. Check list_github_issues first and prefer comment_github_issue for duplicates.", { title: z.string().min(1), body: z.string().min(1), labels: z.array(z.string().min(1)).default([]) }, async (args) => githubIssueRequest("POST", "/issues", args))
   registerJsonTool(server, "comment_github_issue", "Append context to an existing Fitcheck GitHub issue instead of creating a duplicate.", { issue_number: z.number().int().positive(), body: z.string().min(1) }, async (args) => githubIssueRequest("POST", `/issues/${args.issue_number}/comments`, { body: args.body }))
@@ -135,6 +144,22 @@ async function getState() {
   db.data.nutrition ??= {}
   db.data.workouts ??= []
   return { nutrition: db.data.nutrition, workouts: db.data.workouts }
+}
+
+async function getItems() {
+  await recipesDb.read()
+  recipesDb.data.items ??= []
+  return [...recipesDb.data.items].sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id))
+}
+
+async function addItem(name: string, serving: string, nutrients: Record<string, number>, notes?: string) {
+  await recipesDb.read()
+  recipesDb.data.items ??= []
+  const now = new Date().toISOString()
+  const item: RecipeItem = { id: crypto.randomUUID(), name, serving, nutrients, notes, createdAt: now, updatedAt: now }
+  recipesDb.data.items.unshift(item)
+  await recipesDb.write()
+  return item
 }
 
 async function upsertNutrition(date: string, nutrients: Record<string, number>, notes?: string) {
@@ -220,6 +245,9 @@ const styles = `
   .eyebrow { margin: 0 0 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.72rem; letter-spacing: 0.18em; text-transform: uppercase; }
   h1 { max-width: 940px; margin: 0; font-size: clamp(2.4rem, 5vw, 4.6rem); line-height: 0.9; letter-spacing: -0.075em; }
   .lede { max-width: 760px; margin: 12px 0 0; color: var(--ink-soft); font-size: 1rem; line-height: 1.35; }
+  .nav { display: flex; gap: 10px; margin-top: 14px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.78rem; letter-spacing: 0.08em; text-transform: uppercase; }
+  .nav a { color: var(--ink); text-decoration: none; border: 2px solid var(--line); padding: 6px 8px; background: var(--paper-deep); }
+  .nav a:hover, .nav a:focus-visible { background: var(--ink); color: var(--paper); outline: none; }
   .rule { height: 3px; margin: 20px 0 14px; background: var(--line); }
   .widget-shell { margin-top: 14px; padding: 12px; border: 2px solid var(--line); background: var(--paper-deep); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   button { color: var(--paper); background: var(--ink); border: 2px solid var(--ink); padding: 10px 14px; cursor: pointer; font: inherit; }
@@ -241,5 +269,15 @@ const styles = `
   .latest { margin: 0 0 8px; font-size: 0.85rem; }
   .muted { color: var(--ink-soft); }
   .status.error { color: var(--red); }
+  .recipe-page { display: grid; gap: 12px; }
+  .recipe-filter { width: 100%; color: var(--ink); background: var(--paper); border: 2px solid var(--line); padding: 10px 12px; font: inherit; }
+  .recipe-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+  .nutrition-label { display: grid; gap: 6px; padding: 12px; color: #050505; background: #fffdf5; border: 3px solid #050505; font-family: Arial, Helvetica, sans-serif; box-shadow: 6px 6px 0 var(--line); }
+  .nutrition-label h2 { margin: 0; font-family: Arial Black, Arial, Helvetica, sans-serif; font-size: 1.55rem; line-height: 1; letter-spacing: -0.06em; }
+  .label-id { overflow-wrap: anywhere; font: 0.62rem ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .serving { padding: 5px 0; border-top: 8px solid #050505; border-bottom: 4px solid #050505; font-size: 0.9rem; }
+  .nutrient-row { display: flex; justify-content: space-between; gap: 10px; padding: 3px 0; border-top: 1px solid #050505; font-size: 0.86rem; }
+  .calorie-row { font-size: 1.3rem; font-weight: 900; border-top-width: 0; }
+  .recipe-notes { margin: 0; color: #222; font-size: 0.78rem; line-height: 1.25; }
   @media (max-width: 880px) { .page { padding: 18px; } .sheet { box-shadow: 8px 8px 0 var(--line); } .cards, .grid { grid-template-columns: 1fr; } }
 `

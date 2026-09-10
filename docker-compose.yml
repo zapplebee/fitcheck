@@ -8,6 +8,7 @@ services:
       - .env
     environment:
       DATA_PATH: /data/state.json
+      RECIPES_DATA_PATH: /data/recipes.json
       PUBLIC_BASE_URL: https://fitcheck.dev.prettybird.zapplebee.online
       GITHUB_REPOSITORY: zapplebee/fitcheck
     volumes:

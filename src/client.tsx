@@ -6,25 +6,36 @@ import { render } from "hono/jsx/dom"
 type NutritionEntry = { date: string; nutrients: Record<string, number>; notes?: string; updatedAt: string }
 type WorkoutSet = { reps?: number; weight?: number; durationMinutes?: number; distance?: number; notes?: string }
 type WorkoutEntry = { id: string; date: string; category?: string; machine?: string; workout: string; sets: WorkoutSet[]; notes?: string; updatedAt: string }
+type RecipeItem = { id: string; name: string; serving: string; nutrients: Record<string, number>; notes?: string; createdAt: string; updatedAt: string }
 type State = { nutrition: Record<string, NutritionEntry>; workouts: WorkoutEntry[] }
 
 Chart.register(LineController, LineElement, PointElement, LinearScale, CategoryScale, Tooltip)
 
 function FitcheckApp() {
+  const isRecipes = location.pathname === "/recipes"
   const [state, setState] = useState<State>({ nutrition: {}, workouts: [] })
+  const [recipes, setRecipes] = useState<RecipeItem[]>([])
+  const [filter, setFilter] = useState("")
   const [status, setStatus] = useState("Loading dashboard...")
   const chartRef = useRef<HTMLCanvasElement>(null)
   const chartInstance = useRef<Chart | null>(null)
 
   useEffect(() => {
+    if (isRecipes) {
+      loadRecipes().then((next) => {
+        setRecipes(next)
+        setStatus(`Loaded ${next.length} reusable item${next.length === 1 ? "" : "s"}.`)
+      }).catch((error) => setStatus(error instanceof Error ? error.message : String(error)))
+      return
+    }
     loadState().then((next) => {
       setState(next)
       setStatus("Ready. Data is written through MCP.")
     }).catch((error) => setStatus(error instanceof Error ? error.message : String(error)))
-  }, [])
+  }, [isRecipes])
 
   useEffect(() => {
-    if (!chartRef.current) return
+    if (isRecipes || !chartRef.current) return
     chartInstance.current?.destroy()
     const days = nutritionDays(state)
     chartInstance.current = new Chart(chartRef.current, {
@@ -38,7 +49,21 @@ function FitcheckApp() {
       },
       options: { responsive: true, maintainAspectRatio: false, plugins: { tooltip: { mode: "index" } }, scales: { y: { beginAtZero: true } } },
     })
-  }, [state])
+  }, [isRecipes, state])
+
+  if (isRecipes) {
+    const filteredRecipes = recipes.filter((item) => recipeText(item).includes(filter.trim().toLowerCase()))
+    return (
+      <div class="recipe-page">
+        <input class="recipe-filter" value={filter} onInput={(event) => setFilter((event.target as HTMLInputElement).value)} placeholder="Filter recipes, ingredients, GUIDs, nutrients..." />
+        <div class="recipe-grid">
+          {filteredRecipes.map((item) => <NutritionLabel item={item} />)}
+        </div>
+        {filteredRecipes.length === 0 ? <p class="muted">No reusable items match.</p> : null}
+        <p class={status.toLowerCase().includes("error") ? "status error" : "status"}>{status}</p>
+      </div>
+    )
+  }
 
   const days = nutritionDays(state)
   const today = todayKey()
@@ -99,8 +124,28 @@ function Metric(props: { label: string; value: string }) {
   return <section class="card"><p class="label">{props.label}</p><p class="metric">{props.value}</p></section>
 }
 
+function NutritionLabel(props: { item: RecipeItem }) {
+  const entries = Object.entries(props.item.nutrients).sort(([a], [b]) => nutrientRank(a) - nutrientRank(b) || a.localeCompare(b))
+  return (
+    <article class="nutrition-label">
+      <h2>Nutrition Facts</h2>
+      <div class="label-id">{props.item.id}</div>
+      <div class="serving"><strong>{props.item.name}</strong><br />Serving size {props.item.serving}</div>
+      {entries.map(([key, value]) => <div class={key.toLowerCase() === "calories" ? "nutrient-row calorie-row" : "nutrient-row"}><strong>{formatNutrientName(key)}</strong><span>{formatNutrientValue(key, value)}</span></div>)}
+      {props.item.notes ? <p class="recipe-notes">{props.item.notes}</p> : null}
+    </article>
+  )
+}
+
 async function loadState(): Promise<State> {
   const response = await fetch("/api/state")
+  const data = await response.json()
+  if (!response.ok) throw new Error(data?.error ?? `Request failed: ${response.status}`)
+  return data
+}
+
+async function loadRecipes(): Promise<RecipeItem[]> {
+  const response = await fetch("/api/recipes")
   const data = await response.json()
   if (!response.ok) throw new Error(data?.error ?? `Request failed: ${response.status}`)
   return data
@@ -149,6 +194,25 @@ function formatValue(value: number | undefined, suffix = "") {
 
 function formatNutrients(nutrients: Record<string, number>) {
   return Object.entries(nutrients).map(([key, value]) => `${key}: ${value}`).join(" · ")
+}
+
+function recipeText(item: RecipeItem) {
+  return [item.id, item.name, item.serving, item.notes, Object.keys(item.nutrients).join(" ")].join(" ").toLowerCase()
+}
+
+function nutrientRank(key: string) {
+  return ["calories", "fat", "saturated_fat", "trans_fat", "cholesterol", "sodium", "carbs", "fiber", "sugar", "protein"].indexOf(key) === -1 ? 99 : ["calories", "fat", "saturated_fat", "trans_fat", "cholesterol", "sodium", "carbs", "fiber", "sugar", "protein"].indexOf(key)
+}
+
+function formatNutrientName(key: string) {
+  return key.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase())
+}
+
+function formatNutrientValue(key: string, value: number) {
+  if (key.toLowerCase() === "calories") return String(Math.round(value))
+  if (/protein|carb|fat|fiber|sugar/.test(key.toLowerCase())) return `${value}g`
+  if (/sodium|cholesterol/.test(key.toLowerCase())) return `${value}mg`
+  return String(value)
 }
 
 const mount = document.getElementById("fitcheck-app")
