@@ -117,6 +117,8 @@ function createMcpServer(): McpServer {
   registerJsonTool(server, "upsert_nutrition", "Upsert nutrition attributes for one day. Nutrients are expandable keys such as calories, protein, carbs, fat, fiber, sodium, etc.", { date: dateSchema, nutrients: z.record(z.string().min(1), z.number()), notes: z.string().optional() }, async (args) => upsertNutrition(args.date, args.nutrients, args.notes))
   registerJsonTool(server, "upsert_workout", "Upsert a workout entry for a day by optional id. Use category such as upper, lower, cardio, mobility, full-body. Sets may include reps, weight, durationMinutes, distance, and notes.", { id: z.string().optional(), date: dateSchema, category: z.string().optional(), machine: z.string().optional(), workout: z.string().min(1), sets: z.array(workoutSetSchema).default([]), notes: z.string().optional() }, async (args) => upsertWorkout(args))
   registerJsonTool(server, "delete_workout", "Delete one workout by id.", { id: z.string().min(1) }, async ({ id }) => deleteWorkout(id))
+  registerJsonTool(server, "list_catalog_items", "List reusable recipe and food catalog items. Use this before logging food by reference or before creating a new catalog item to avoid duplicates.", { query: z.string().optional() }, async (args) => listCatalogItems(args.query))
+  registerJsonTool(server, "get_catalog_item", "Get one reusable recipe or food catalog item by GUID.", { id: z.string().min(1) }, async ({ id }) => getCatalogItem(id))
   registerJsonTool(server, "create_catalog_item", "Create a reusable recipe or food catalog item with a generated GUID and nutrition-label values. This only stores the definition for review in /recipes; it does not log a meal or change daily nutrition totals.", { name: z.string().min(1), serving: z.string().min(1).default("1 serving"), nutrients: z.record(z.string().min(1), z.number()), notes: z.string().optional() }, async (args) => createCatalogItem(args.name, args.serving, args.nutrients, args.notes))
   registerJsonTool(server, "list_github_issues", "List open GitHub issues for Fitcheck so agents can avoid duplicate bug reports and feature requests.", { state: z.enum(["open", "closed", "all"]).default("open"), labels: z.string().optional(), per_page: z.number().int().min(1).max(100).default(30) }, async (args) => githubIssueRequest("GET", `/issues?state=${encodeURIComponent(args.state)}&per_page=${args.per_page}${args.labels ? `&labels=${encodeURIComponent(args.labels)}` : ""}`))
   registerJsonTool(server, "create_github_issue", "Create a GitHub issue for a Fitcheck bug report or feature request. Check list_github_issues first and prefer comment_github_issue for duplicates.", { title: z.string().min(1), body: z.string().min(1), labels: z.array(z.string().min(1)).default([]) }, async (args) => githubIssueRequest("POST", "/issues", args))
@@ -150,6 +152,19 @@ async function getItems() {
   await recipesDb.read()
   recipesDb.data.items ??= []
   return [...recipesDb.data.items].sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id))
+}
+
+async function listCatalogItems(query?: string) {
+  const items = await getItems()
+  const needle = query?.trim().toLowerCase()
+  if (!needle) return items
+  return items.filter((item) => [item.id, item.name, item.serving, item.notes, Object.keys(item.nutrients).join(" ")].join(" ").toLowerCase().includes(needle))
+}
+
+async function getCatalogItem(id: string) {
+  const item = (await getItems()).find((candidate) => candidate.id === id)
+  if (!item) throw new Error(`Catalog item not found: ${id}`)
+  return item
 }
 
 async function createCatalogItem(name: string, serving: string, nutrients: Record<string, number>, notes?: string) {
