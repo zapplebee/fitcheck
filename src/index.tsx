@@ -117,10 +117,15 @@ function createMcpServer(): McpServer {
 
 function registerJsonTool<T extends z.ZodRawShape>(server: McpServer, name: string, description: string, inputSchema: T, handler: (args: z.infer<z.ZodObject<T>>) => Promise<unknown> | unknown) {
   server.registerTool(name, { description, inputSchema }, (async (args: z.infer<z.ZodObject<T>>) => {
+    const started = performance.now()
     try {
-      return { content: [{ type: "text" as const, text: JSON.stringify(await handler(args), null, 2) }] }
+      const result = await handler(args)
+      console.log(JSON.stringify({ event: "mcp_tool", tool: name, ok: true, durationMs: Math.round(performance.now() - started) }))
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] }
     } catch (error) {
-      return { isError: true, content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }] }
+      const message = error instanceof Error ? error.message : String(error)
+      console.log(JSON.stringify({ event: "mcp_tool", tool: name, ok: false, durationMs: Math.round(performance.now() - started), error: message }))
+      return { isError: true, content: [{ type: "text" as const, text: message }] }
     }
   }) as never)
 }
