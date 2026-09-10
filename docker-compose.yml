@@ -1,0 +1,29 @@
+services:
+  fitcheck:
+    build: .
+    image: fitcheck:latest
+    container_name: fitcheck
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATA_PATH: /data/state.json
+      PUBLIC_BASE_URL: https://fitcheck.dev.prettybird.zapplebee.online
+      GITHUB_REPOSITORY: zapplebee/fitcheck
+    volumes:
+      - ./data:/data
+    networks:
+      - nyx_svc_dev
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=nyx_svc_dev
+      - traefik.http.routers.fitcheck.rule=Host(`fitcheck.dev.prettybird.zapplebee.online`)
+      - traefik.http.routers.fitcheck.entrypoints=websecure
+      - traefik.http.routers.fitcheck.tls=true
+      - traefik.http.routers.fitcheck.tls.certresolver=le
+      - traefik.http.services.fitcheck.loadbalancer.server.port=3000
+
+networks:
+  nyx_svc_dev:
+    external: true
+    name: nyx_svc_dev

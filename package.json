@@ -1,0 +1,22 @@
+{
+  "name": "fitcheck",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:client": "bun build src/client.tsx --outdir public --target browser --minify",
+    "start": "bun run src/index.tsx",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "chart.js": "^4.5.0",
+    "hono": "^4.13.3",
+    "lowdb": "^7.0.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.0",
+    "typescript": "^5.9.2"
+  }
+}
