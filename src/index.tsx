@@ -35,6 +35,7 @@ app.use("*", async (c, next) => {
 
 app.get("/", (c) => c.html(<Page />))
 app.get("/recipes", (c) => c.html(<Page title="Recipes" />))
+app.get("/days/:date", (c) => c.html(<Page title={c.req.param("date")} />))
 app.get("/client.js", async (c) => c.body(await Bun.file("./public/client.js").text(), 200, { "content-type": "application/javascript; charset=utf-8", "cache-control": "no-cache" }))
 app.get("/health", (c) => c.json({ ok: true, service: "fitcheck" }))
 
@@ -259,6 +260,8 @@ const styles = `
   .sheet { width: min(1180px, 100%); padding: clamp(18px, 3vw, 34px); background: var(--paper); border: 3px solid var(--line); box-shadow: 14px 14px 0 var(--line); }
   .eyebrow { margin: 0 0 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.72rem; letter-spacing: 0.18em; text-transform: uppercase; }
   h1 { max-width: 940px; margin: 0; font-size: clamp(2.4rem, 5vw, 4.6rem); line-height: 0.9; letter-spacing: -0.075em; }
+  h2 { margin: 0; font-size: clamp(2rem, 4vw, 4rem); line-height: 0.9; letter-spacing: -0.06em; }
+  h3 { margin: 0; font-size: 1.1rem; letter-spacing: -0.025em; }
   .lede { max-width: 760px; margin: 12px 0 0; color: var(--ink-soft); font-size: 1rem; line-height: 1.35; }
   .nav { display: flex; gap: 10px; margin-top: 14px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.78rem; letter-spacing: 0.08em; text-transform: uppercase; }
   .nav a { color: var(--ink); text-decoration: none; border: 2px solid var(--line); padding: 6px 8px; background: var(--paper-deep); }
@@ -274,7 +277,8 @@ const styles = `
   .metric { margin: 0; font-size: clamp(1.7rem, 3vw, 2.6rem); line-height: 1; letter-spacing: -0.06em; }
   .grid { display: grid; grid-template-columns: 1.5fr 1fr; gap: 12px; }
   .calendar { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
-  .day { min-height: 44px; padding: 5px; border: 1px solid rgba(9, 35, 69, 0.35); background: var(--paper-deep); font-size: 0.68rem; }
+  .day { min-height: 44px; padding: 5px; border: 1px solid rgba(9, 35, 69, 0.35); background: var(--paper-deep); color: var(--ink); font-size: 0.68rem; text-decoration: none; }
+  .day:hover, .day:focus-visible { outline: 2px solid var(--line); outline-offset: -2px; }
   .day.upper { background: #dbe7d1; }
   .day.lower { background: #ead6c2; }
   .day.cardio { background: #d5e0ea; }
@@ -294,5 +298,17 @@ const styles = `
   .nutrient-row { display: flex; justify-content: space-between; gap: 10px; padding: 3px 0; border-top: 1px solid #050505; font-size: 0.86rem; }
   .calorie-row { font-size: 1.3rem; font-weight: 900; border-top-width: 0; }
   .recipe-notes { margin: 0; color: #222; font-size: 0.78rem; line-height: 1.25; }
+  .day-detail { display: grid; gap: 12px; }
+  .back-link { width: fit-content; color: var(--ink); text-decoration: none; border: 2px solid var(--line); padding: 6px 8px; background: var(--paper-deep); font-size: 0.78rem; letter-spacing: 0.08em; text-transform: uppercase; }
+  .back-link:hover, .back-link:focus-visible { color: var(--paper); background: var(--ink); outline: none; }
+  .day-title { padding: 12px; border: 2px solid var(--line); background: var(--paper); }
+  .macro-table { display: grid; gap: 4px; }
+  .macro-table div { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-top: 1px solid rgba(9, 35, 69, 0.25); }
+  .notes { margin: 10px 0 0; color: var(--ink-soft); font-size: 0.82rem; line-height: 1.35; }
+  .workout-detail-list { display: grid; gap: 10px; }
+  .workout-detail { display: grid; gap: 4px; padding-top: 8px; border-top: 1px solid rgba(9, 35, 69, 0.25); }
+  .workout-detail p { margin: 0; }
+  .set-list { display: grid; gap: 4px; margin: 6px 0 0; padding: 0; list-style: none; }
+  .set-list li { display: flex; justify-content: space-between; gap: 12px; font-size: 0.8rem; }
   @media (max-width: 880px) { .page { padding: 18px; } .sheet { box-shadow: 8px 8px 0 var(--line); } .cards, .grid { grid-template-columns: 1fr; } }
 `

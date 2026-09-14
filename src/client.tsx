@@ -13,6 +13,7 @@ Chart.register(LineController, LineElement, PointElement, LinearScale, CategoryS
 
 function FitcheckApp() {
   const isRecipes = location.pathname === "/recipes"
+  const dayDate = location.pathname.match(/^\/days\/(\d{4}-\d{2}-\d{2})$/)?.[1]
   const [state, setState] = useState<State>({ nutrition: {}, workouts: [] })
   const [recipes, setRecipes] = useState<RecipeItem[]>([])
   const [filter, setFilter] = useState("")
@@ -30,12 +31,12 @@ function FitcheckApp() {
     }
     loadState().then((next) => {
       setState(next)
-      setStatus("Ready. Data is written through MCP.")
+      setStatus(dayDate ? `Loaded ${dayDate}.` : "Ready. Data is written through MCP.")
     }).catch((error) => setStatus(error instanceof Error ? error.message : String(error)))
-  }, [isRecipes])
+  }, [dayDate, isRecipes])
 
   useEffect(() => {
-    if (isRecipes || !chartRef.current) return
+    if (isRecipes || dayDate || !chartRef.current) return
     chartInstance.current?.destroy()
     const days = nutritionDays(state)
     chartInstance.current = new Chart(chartRef.current, {
@@ -49,7 +50,7 @@ function FitcheckApp() {
       },
       options: { responsive: true, maintainAspectRatio: false, plugins: { tooltip: { mode: "index" } }, scales: { y: { beginAtZero: true } } },
     })
-  }, [isRecipes, state])
+  }, [dayDate, isRecipes, state])
 
   if (isRecipes) {
     const filteredRecipes = recipes.filter((item) => recipeText(item).includes(filter.trim().toLowerCase()))
@@ -63,6 +64,10 @@ function FitcheckApp() {
         <p class={status.toLowerCase().includes("error") ? "status error" : "status"}>{status}</p>
       </div>
     )
+  }
+
+  if (dayDate) {
+    return <DayDetail date={dayDate} state={state} status={status} />
   }
 
   const days = nutritionDays(state)
@@ -94,7 +99,7 @@ function FitcheckApp() {
             {calendarDays().map((date) => {
               const workout = state.workouts.find((item) => item.date === date)
               const category = slug(workout?.category ?? "")
-              return <div class={`day ${category}`}><strong>{date.slice(8)}</strong><br />{workout?.category ?? ""}</div>
+              return <a class={`day ${category}`} href={`/days/${date}`}><strong>{date.slice(8)}</strong><br />{workout?.category ?? ""}</a>
             })}
           </div>
         </section>
@@ -122,6 +127,49 @@ function FitcheckApp() {
 
 function Metric(props: { label: string; value: string }) {
   return <section class="card"><p class="label">{props.label}</p><p class="metric">{props.value}</p></section>
+}
+
+function DayDetail(props: { date: string; state: State; status: string }) {
+  const nutrition = props.state.nutrition[props.date]
+  const workouts = props.state.workouts.filter((workout) => workout.date === props.date)
+  return (
+    <div class="day-detail">
+      <a class="back-link" href="/">back to dashboard</a>
+      <div class="day-title">
+        <p class="label">daily detail</p>
+        <h2>{props.date}</h2>
+      </div>
+      <div class="cards">
+        <Metric label="calories" value={formatValue(nutrition?.nutrients.calories)} />
+        <Metric label="protein" value={formatValue(nutrition?.nutrients.protein, "g")} />
+        <Metric label="carbs" value={formatValue(nutrition?.nutrients.carbs, "g")} />
+        <Metric label="fat" value={formatValue(nutrition?.nutrients.fat, "g")} />
+      </div>
+      <div class="grid">
+        <section class="panel">
+          <p class="label">dietary macros</p>
+          {nutrition ? <div class="macro-table">{Object.entries(nutrition.nutrients).sort(([a], [b]) => nutrientRank(a) - nutrientRank(b) || a.localeCompare(b)).map(([key, value]) => <div><strong>{formatNutrientName(key)}</strong><span>{formatNutrientValue(key, value)}</span></div>)}</div> : <p class="muted">No nutrition logged for this day.</p>}
+          {nutrition?.notes ? <p class="notes">{nutrition.notes}</p> : null}
+        </section>
+        <section class="panel">
+          <p class="label">workout details</p>
+          {workouts.length ? <div class="workout-detail-list">{workouts.map((workout) => <WorkoutDetail workout={workout} />)}</div> : <p class="muted">No workouts logged for this day.</p>}
+        </section>
+      </div>
+      <p class={props.status.toLowerCase().includes("error") ? "status error" : "status"}>{props.status}</p>
+    </div>
+  )
+}
+
+function WorkoutDetail(props: { workout: WorkoutEntry }) {
+  return (
+    <article class="workout-detail">
+      <h3>{props.workout.workout}</h3>
+      <p class="muted">{props.workout.category ?? "uncategorized"} · {props.workout.machine ?? "no machine"}</p>
+      {props.workout.sets.length ? <ol class="set-list">{props.workout.sets.map((set, index) => <li><strong>set {index + 1}</strong><span>{formatSet(set)}</span></li>)}</ol> : <p class="muted">No set details.</p>}
+      {props.workout.notes ? <p class="notes">{props.workout.notes}</p> : null}
+    </article>
+  )
 }
 
 function NutritionLabel(props: { item: RecipeItem }) {
@@ -213,6 +261,16 @@ function formatNutrientValue(key: string, value: number) {
   if (/protein|carb|fat|fiber|sugar/.test(key.toLowerCase())) return `${value}g`
   if (/sodium|cholesterol/.test(key.toLowerCase())) return `${value}mg`
   return String(value)
+}
+
+function formatSet(set: WorkoutSet) {
+  const parts = []
+  if (typeof set.reps === "number") parts.push(`${set.reps} reps`)
+  if (typeof set.weight === "number") parts.push(`${set.weight} lb`)
+  if (typeof set.durationMinutes === "number") parts.push(`${set.durationMinutes} min`)
+  if (typeof set.distance === "number") parts.push(`${set.distance} mi`)
+  if (set.notes) parts.push(set.notes)
+  return parts.join(" · ") || "logged"
 }
 
 const mount = document.getElementById("fitcheck-app")
