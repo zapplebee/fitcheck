@@ -45,7 +45,7 @@ function FitcheckApp() {
         labels: days.map((day) => day.date.slice(5)),
         datasets: [
           { label: "Calories", data: days.map((day) => day.nutrients.calories ?? null), borderColor: "#9a5014", backgroundColor: "#9a5014", tension: 0.25 },
-          { label: "Protein", data: days.map((day) => day.nutrients.protein ?? null), borderColor: "#1f6f43", backgroundColor: "#1f6f43", tension: 0.25 },
+          { label: "Protein x10", data: days.map((day) => typeof day.nutrients.protein === "number" ? day.nutrients.protein * 10 : null), borderColor: "#1f6f43", backgroundColor: "#1f6f43", tension: 0.25 },
         ],
       },
       options: { responsive: true, maintainAspectRatio: false, plugins: { tooltip: { mode: "index" } }, scales: { y: { beginAtZero: true } } },
