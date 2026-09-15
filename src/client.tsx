@@ -100,7 +100,7 @@ function FitcheckApp() {
         <section class="panel">
           <p class="label">workout calendar</p>
           <div class="calendar">
-            {calendarDays().map((date) => {
+            {calendarDays(state).map((date) => {
               const workout = state.workouts.find((item) => item.date === date)
               const category = slug(workout?.category ?? "")
               return <a class={`day ${category}`} href={`/days/${date}`}><strong>{date.slice(8)}</strong><br />{workout?.category ?? ""}</a>
@@ -227,11 +227,12 @@ function ratio(numerator: number | undefined, denominator: number | undefined) {
   return numerator / denominator
 }
 
-function calendarDays() {
+function calendarDays(state: State) {
   const today = todayKey()
-  return Array.from({ length: 28 }, (_, index) => {
-    return addDays(today, index - 27)
-  })
+  const trackedDates = [...Object.keys(state.nutrition), ...state.workouts.map((workout) => workout.date)]
+  const first = trackedDates.sort()[0] ?? addDays(today, -27)
+  const length = daysBetween(first, today) + 1
+  return Array.from({ length }, (_, index) => addDays(first, index))
 }
 
 function slug(input: string) {
@@ -253,6 +254,10 @@ function addDays(date: string, days: number) {
   const next = new Date(`${date}T12:00:00Z`)
   next.setUTCDate(next.getUTCDate() + days)
   return next.toISOString().slice(0, 10)
+}
+
+function daysBetween(start: string, end: string) {
+  return Math.max(0, Math.round((new Date(`${end}T12:00:00Z`).getTime() - new Date(`${start}T12:00:00Z`).getTime()) / 86_400_000))
 }
 
 function formatValue(value: number | undefined, suffix = "") {
