@@ -3,6 +3,7 @@ FROM oven/bun:1.3.5
 WORKDIR /app
 
 COPY package.json bun.lock ./
+COPY react-shim ./react-shim
 RUN bun install --frozen-lockfile --production
 
 COPY src ./src

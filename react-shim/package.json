@@ -1,0 +1,12 @@
+{
+  "name": "react",
+  "version": "0.0.0-hono-shim",
+  "private": true,
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./jsx-runtime": "./jsx-runtime.js",
+    "./jsx-dev-runtime": "./jsx-dev-runtime.js"
+  }
+}

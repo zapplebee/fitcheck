@@ -276,8 +276,16 @@ const styles = `
   .label { margin: 0 0 6px; color: var(--ink-soft); font-size: 0.68rem; letter-spacing: 0.14em; text-transform: uppercase; }
   .metric { margin: 0; font-size: clamp(1.7rem, 3vw, 2.6rem); line-height: 1; letter-spacing: -0.06em; }
   .grid { display: grid; grid-template-columns: 1.5fr 1fr; gap: 12px; }
-  .calendar { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+  .rdp-root { width: 100%; }
+  .rdp-months { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; }
+  .rdp-month { padding: 8px; border: 1px solid rgba(9, 35, 69, 0.35); background: var(--paper-deep); }
+  .rdp-month_caption { margin-bottom: 6px; font-weight: 700; letter-spacing: -0.025em; }
+  .rdp-month_grid { width: 100%; border-collapse: separate; border-spacing: 3px; table-layout: fixed; }
+  .rdp-weekday { color: var(--ink-soft); font-size: 0.62rem; font-weight: 400; text-transform: uppercase; }
+  .rdp-day { padding: 0; vertical-align: top; }
   .day { min-height: 44px; padding: 5px; border: 1px solid rgba(9, 35, 69, 0.35); background: var(--paper-deep); color: var(--ink); font-size: 0.68rem; text-decoration: none; }
+  button.day { display: grid; gap: 1px; width: 100%; min-width: 0; color: var(--ink); border-color: rgba(9, 35, 69, 0.35); background: var(--paper); padding: 5px; text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: none; }
+  button.day span, button.day small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-soft); font-size: 0.58rem; }
   .day:hover, .day:focus-visible { outline: 2px solid var(--line); outline-offset: -2px; }
   .day.upper { background: #dbe7d1; }
   .day.lower { background: #ead6c2; }

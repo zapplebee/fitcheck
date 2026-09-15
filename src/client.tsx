@@ -1,5 +1,6 @@
 /** @jsxImportSource hono/jsx */
 import { CategoryScale, Chart, LineController, LineElement, LinearScale, PointElement, Tooltip } from "chart.js"
+import { DayPicker } from "@daypicker/react"
 import { useEffect, useRef, useState } from "hono/jsx"
 import { render } from "hono/jsx/dom"
 
@@ -99,13 +100,7 @@ function FitcheckApp() {
         </section>
         <section class="panel">
           <p class="label">workout calendar</p>
-          <div class="calendar">
-            {calendarDays(state).map((date) => {
-              const workout = state.workouts.find((item) => item.date === date)
-              const category = slug(workout?.category ?? "")
-              return <a class={`day ${category}`} href={`/days/${date}`}><strong>{date.slice(8)}</strong><br />{workout?.category ?? ""}</a>
-            })}
-          </div>
+          <FitnessCalendar state={state} />
         </section>
       </div>
 
@@ -131,6 +126,27 @@ function FitcheckApp() {
 
 function Metric(props: { label: string; value: string }) {
   return <section class="card"><p class="label">{props.label}</p><p class="metric">{props.value}</p></section>
+}
+
+function FitnessCalendar(props: { state: State }) {
+  const today = todayKey()
+  const trackedDates = [...Object.keys(props.state.nutrition), ...props.state.workouts.map((workout) => workout.date)]
+  const first = trackedDates.sort()[0] ?? addDays(today, -27)
+  const DayButton = (buttonProps: { day: { date: Date }; children?: unknown; [key: string]: unknown }) => {
+    const { day, children, ...rest } = buttonProps
+    const date = dateKeyFromDate(day.date)
+    const workout = props.state.workouts.find((item) => item.date === date)
+    const nutrition = props.state.nutrition[date]
+    const category = slug(workout?.category ?? "")
+    return (
+      <button {...rest} class={`day ${category}`} type="button" onClick={() => { location.href = `/days/${date}` }}>
+        <strong>{children}</strong>
+        <span>{workout?.category ?? ""}</span>
+        {nutrition?.nutrients.calories ? <small>{Math.round(nutrition.nutrients.calories)} cal</small> : null}
+      </button>
+    )
+  }
+  return <DayPicker mode="single" timeZone="America/Chicago" defaultMonth={dateFromKey(first)} startMonth={dateFromKey(first)} endMonth={dateFromKey(today)} numberOfMonths={monthsBetween(first, today) + 1} hideNavigation fixedWeeks showOutsideDays={false} components={{ DayButton }} />
 }
 
 function DayDetail(props: { date: string; state: State; status: string }) {
@@ -227,14 +243,6 @@ function ratio(numerator: number | undefined, denominator: number | undefined) {
   return numerator / denominator
 }
 
-function calendarDays(state: State) {
-  const today = todayKey()
-  const trackedDates = [...Object.keys(state.nutrition), ...state.workouts.map((workout) => workout.date)]
-  const first = trackedDates.sort()[0] ?? addDays(today, -27)
-  const length = daysBetween(first, today) + 1
-  return Array.from({ length }, (_, index) => addDays(first, index))
-}
-
 function slug(input: string) {
   return input.toLowerCase().replace(/[^a-z0-9]+/g, "-")
 }
@@ -256,8 +264,25 @@ function addDays(date: string, days: number) {
   return next.toISOString().slice(0, 10)
 }
 
-function daysBetween(start: string, end: string) {
-  return Math.max(0, Math.round((new Date(`${end}T12:00:00Z`).getTime() - new Date(`${start}T12:00:00Z`).getTime()) / 86_400_000))
+function dateFromKey(date: string) {
+  return new Date(`${date}T12:00:00Z`)
+}
+
+function dateKeyFromDate(date: Date) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Chicago",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date)
+  const part = (type: string) => parts.find((item) => item.type === type)?.value ?? ""
+  return `${part("year")}-${part("month")}-${part("day")}`
+}
+
+function monthsBetween(start: string, end: string) {
+  const [startYear, startMonth] = start.split("-").map(Number)
+  const [endYear, endMonth] = end.split("-").map(Number)
+  return (endYear - startYear) * 12 + (endMonth - startMonth)
 }
 
 function formatValue(value: number | undefined, suffix = "") {
