@@ -77,8 +77,8 @@ function FitcheckApp() {
   const todayNutrition = state.nutrition[today]
   const avgCalories = average(recent, "calories")
   const avgProtein = average(recent, "protein")
-  const todayRatio = ratio(todayNutrition?.nutrients.calories, todayNutrition?.nutrients.protein)
-  const rollingRatio = nutrientRatio(recent, "calories", "protein")
+  const todayRatio = ratio(todayNutrition?.nutrients.protein, todayNutrition?.nutrients.calories)
+  const rollingRatio = nutrientRatio(recent, "protein", "calories")
   const latestWorkout = state.workouts[0]
 
   return (
@@ -86,10 +86,10 @@ function FitcheckApp() {
       <div class="cards">
         <Metric label="today calories" value={formatValue(todayNutrition?.nutrients.calories)} />
         <Metric label="today protein" value={formatValue(todayNutrition?.nutrients.protein, "g")} />
-        <Metric label="today cal/protein" value={formatRatio(todayRatio)} />
+        <Metric label="today protein/cal" value={formatRatio(todayRatio)} />
         <Metric label="7 day calories" value={avgCalories ? String(Math.round(avgCalories)) : "--"} />
         <Metric label="7 day protein" value={avgProtein ? `${Math.round(avgProtein)}g` : "--"} />
-        <Metric label="7 day cal/protein" value={formatRatio(rollingRatio)} />
+        <Metric label="7 day protein/cal" value={formatRatio(rollingRatio)} />
       </div>
 
       <div class="grid">
@@ -260,7 +260,7 @@ function formatValue(value: number | undefined, suffix = "") {
 }
 
 function formatRatio(value: number | undefined) {
-  return typeof value === "number" ? value.toFixed(1) : "--"
+  return typeof value === "number" ? value.toFixed(3) : "--"
 }
 
 function formatNutrients(nutrients: Record<string, number>) {
