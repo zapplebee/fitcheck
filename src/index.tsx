@@ -271,7 +271,7 @@ const styles = `
   button { color: var(--paper); background: var(--ink); border: 2px solid var(--ink); padding: 10px 14px; cursor: pointer; font: inherit; }
   button:hover, button:focus-visible { color: var(--ink); background: var(--paper); outline: none; }
   .dashboard { display: grid; gap: 12px; }
-  .cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
   .card, .panel { padding: 12px; border: 2px solid var(--line); background: var(--paper); }
   .label { margin: 0 0 6px; color: var(--ink-soft); font-size: 0.68rem; letter-spacing: 0.14em; text-transform: uppercase; }
   .metric { margin: 0; font-size: clamp(1.7rem, 3vw, 2.6rem); line-height: 1; letter-spacing: -0.06em; }

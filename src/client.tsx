@@ -77,6 +77,8 @@ function FitcheckApp() {
   const todayNutrition = state.nutrition[today]
   const avgCalories = average(recent, "calories")
   const avgProtein = average(recent, "protein")
+  const todayRatio = ratio(todayNutrition?.nutrients.calories, todayNutrition?.nutrients.protein)
+  const rollingRatio = nutrientRatio(recent, "calories", "protein")
   const latestWorkout = state.workouts[0]
 
   return (
@@ -84,8 +86,10 @@ function FitcheckApp() {
       <div class="cards">
         <Metric label="today calories" value={formatValue(todayNutrition?.nutrients.calories)} />
         <Metric label="today protein" value={formatValue(todayNutrition?.nutrients.protein, "g")} />
+        <Metric label="today cal/protein" value={formatRatio(todayRatio)} />
         <Metric label="7 day calories" value={avgCalories ? String(Math.round(avgCalories)) : "--"} />
         <Metric label="7 day protein" value={avgProtein ? `${Math.round(avgProtein)}g` : "--"} />
+        <Metric label="7 day cal/protein" value={formatRatio(rollingRatio)} />
       </div>
 
       <div class="grid">
@@ -208,6 +212,21 @@ function average(days: NutritionEntry[], key: string) {
   return values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length)
 }
 
+function nutrientRatio(days: NutritionEntry[], numeratorKey: string, denominatorKey: string) {
+  const totals = days.reduce((sum, day) => {
+    const numerator = day.nutrients[numeratorKey]
+    const denominator = day.nutrients[denominatorKey]
+    if (typeof numerator === "number" && typeof denominator === "number") return { numerator: sum.numerator + numerator, denominator: sum.denominator + denominator }
+    return sum
+  }, { numerator: 0, denominator: 0 })
+  return ratio(totals.numerator, totals.denominator)
+}
+
+function ratio(numerator: number | undefined, denominator: number | undefined) {
+  if (typeof numerator !== "number" || typeof denominator !== "number" || denominator === 0) return undefined
+  return numerator / denominator
+}
+
 function calendarDays() {
   const today = todayKey()
   return Array.from({ length: 28 }, (_, index) => {
@@ -238,6 +257,10 @@ function addDays(date: string, days: number) {
 
 function formatValue(value: number | undefined, suffix = "") {
   return typeof value === "number" ? `${Math.round(value)}${suffix}` : "--"
+}
+
+function formatRatio(value: number | undefined) {
+  return typeof value === "number" ? value.toFixed(1) : "--"
 }
 
 function formatNutrients(nutrients: Record<string, number>) {
