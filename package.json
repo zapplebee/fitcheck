@@ -15,6 +15,7 @@
     "hono": "^4.13.3",
     "lowdb": "^7.0.1",
     "react": "file:./react-shim",
+    "winston": "^3.19.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

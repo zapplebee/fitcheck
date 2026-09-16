@@ -5,15 +5,16 @@ import { mkdir } from "node:fs/promises"
 import { dirname } from "node:path"
 import { Hono } from "hono"
 import { JSONFilePreset } from "lowdb/node"
+import winston from "winston"
 import { z } from "zod"
 
 type NutritionEntry = { date: string; nutrients: Record<string, number>; notes?: string; updatedAt: string }
 type WorkoutSet = { reps?: number; weight?: number; durationMinutes?: number; distance?: number; notes?: string }
 type WorkoutTag = "plyometric" | "upper" | "lower" | "core" | "rehab" | "cardio"
 type WorkoutTrackingMode = "sets_reps_weight" | "duration_distance"
-type WorkoutEntry = { id: string; date: string; category?: string; trackingMode?: WorkoutTrackingMode; machine?: string; workout: string; exerciseId?: string; sets: WorkoutSet[]; notes?: string; updatedAt: string }
+type WorkoutEntry = { id: string; date: string; category?: string; machine?: string; workout: string; exerciseId?: string; sets: WorkoutSet[]; notes?: string; updatedAt: string }
 type RecipeItem = { id: string; name: string; serving: string; nutrients: Record<string, number>; notes?: string; createdAt: string; updatedAt: string }
-type ExerciseItem = { id: string; name: string; kind: "strength" | "cardio" | "mobility" | "other"; tags: WorkoutTag[]; machine?: string; notes?: string; createdAt: string; updatedAt: string }
+type ExerciseItem = { id: string; name: string; kind: "strength" | "cardio" | "mobility" | "other"; trackingMode: WorkoutTrackingMode; tags: WorkoutTag[]; machine?: string; notes?: string; createdAt: string; updatedAt: string }
 type LogDbSchema = { nutrition: Record<string, NutritionEntry>; workouts: WorkoutEntry[]; clients: Record<string, { clientId: string; clientName?: string; createdAt: string }> }
 type RecipeDbSchema = { items: RecipeItem[] }
 type ExerciseDbSchema = { items: ExerciseItem[] }
@@ -33,12 +34,18 @@ await mkdir(dirname(exercisesDataPath), { recursive: true })
 const db = await JSONFilePreset<LogDbSchema>(dataPath, { nutrition: {}, workouts: [], clients: {} })
 const recipesDb = await JSONFilePreset<RecipeDbSchema>(recipesDataPath, { items: [] })
 const exercisesDb = await JSONFilePreset<ExerciseDbSchema>(exercisesDataPath, { items: [] })
+const logger = winston.createLogger({
+  level: "info",
+  format: winston.format.combine(winston.format.timestamp(), winston.format.json()),
+  transports: [new winston.transports.Console(), new winston.transports.File({ filename: process.env.LOG_PATH ?? `${dirname(dataPath)}/fitcheck-events.log`, options: { flags: "a" } })],
+})
+await migrateExerciseCatalog()
 await exercisesDb.write()
 
 app.use("*", async (c, next) => {
   const started = performance.now()
   await next()
-  console.log(JSON.stringify({ event: "http_request", method: c.req.method, path: new URL(c.req.url).pathname, status: c.res.status, durationMs: Math.round(performance.now() - started) }))
+  logger.info("http_request", { method: c.req.method, path: new URL(c.req.url).pathname, status: c.res.status, durationMs: Math.round(performance.now() - started) })
 })
 
 app.get("/", (c) => c.html(<Page />))
@@ -57,8 +64,10 @@ app.post("/register", async (c) => {
   const body = await safeJson(c.req.raw)
   const clientId = `fitcheck-${crypto.randomUUID()}`
   await db.read()
-  db.data.clients[clientId] = { clientId, clientName: typeof body.client_name === "string" ? body.client_name : undefined, createdAt: new Date().toISOString() }
+  const client = { clientId, clientName: typeof body.client_name === "string" ? body.client_name : undefined, createdAt: new Date().toISOString() }
+  db.data.clients[clientId] = client
   await db.write()
+  logMutation("create", "oauth_client", undefined, client)
   return c.json({ client_id: clientId, client_id_issued_at: Math.floor(Date.now() / 1000), grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none" })
 })
 app.get("/authorize", (c) => {
@@ -93,7 +102,7 @@ app.all("/mcp", async (c) => {
 })
 
 Bun.serve({ fetch: app.fetch, hostname: "0.0.0.0", port })
-console.log(`fitcheck listening on 0.0.0.0:${port}`)
+logger.info("server_started", { host: "0.0.0.0", port })
 
 function Page(props: { title?: string } = {}) {
   return (
@@ -126,11 +135,11 @@ function createMcpServer(): McpServer {
   registerJsonTool(server, "get_state", "Return all tracked nutrition and workouts.", {}, async () => getState())
   registerJsonTool(server, "get_summary", "Return rolling nutrition averages and recent workout summaries.", {}, async () => summary())
   registerJsonTool(server, "upsert_nutrition", "Upsert nutrition attributes for one day. Nutrients are expandable keys such as calories, protein, carbs, fat, fiber, sodium, etc.", { date: dateSchema, nutrients: z.record(z.string().min(1), z.number()), notes: z.string().optional() }, async (args) => upsertNutrition(args.date, args.nutrients, args.notes))
-  registerJsonTool(server, "upsert_workout", "Upsert an activity log for a day by optional id. Include exerciseId from list_exercise_catalog to associate the log with a tagged catalog exercise. Choose exactly one trackingMode for new workouts: sets_reps_weight for reps/sets/weight, or duration_distance for duration/distance. Tags belong on the catalog exercise, not on this activity record. Use category such as upper, lower, cardio, mobility, full-body. Sets may include reps, weight, durationMinutes, distance, and notes.", { id: z.string().optional(), date: dateSchema, category: z.string().optional(), trackingMode: workoutTrackingModeSchema.optional(), machine: z.string().optional(), workout: z.string().min(1), exerciseId: z.string().uuid().optional(), sets: z.array(workoutSetSchema).default([]), notes: z.string().optional() }, async (args) => upsertWorkout(args))
+  registerJsonTool(server, "upsert_workout", "Upsert an activity log for a day by optional id. Include exerciseId from list_exercise_catalog; the activity inherits that catalog exercise's trackingMode. Tags and trackingMode belong on the catalog exercise, not on this activity record. Use category such as upper, lower, cardio, mobility, full-body. Sets must match the catalog mode: reps/weight for sets_reps_weight, or duration/distance for duration_distance.", { id: z.string().optional(), date: dateSchema, category: z.string().optional(), machine: z.string().optional(), workout: z.string().min(1), exerciseId: z.string().uuid(), sets: z.array(workoutSetSchema).default([]), notes: z.string().optional() }, async (args) => upsertWorkout(args))
   registerJsonTool(server, "delete_workout", "Delete one workout by id.", { id: z.string().min(1) }, async ({ id }) => deleteWorkout(id))
   registerJsonTool(server, "list_exercise_catalog", "List cataloged exercises and machines with their GUIDs. Use this to identify an exerciseId before logging a workout and to avoid duplicate exercise definitions.", { query: z.string().optional() }, async (args) => listExerciseCatalog(args.query))
   registerJsonTool(server, "get_exercise_catalog_item", "Get one cataloged exercise or machine by GUID, including its tracking kind.", { id: z.string().uuid() }, async ({ id }) => getExerciseCatalogItem(id))
-  registerJsonTool(server, "create_exercise_catalog_item", "Create a reusable, tagged exercise or machine in the exercise catalog. This creates a GUID for future workout logs; it does not log a workout. Tags may include plyometric, upper, lower, core, rehab, and cardio.", { name: z.string().min(1), kind: z.enum(["strength", "cardio", "mobility", "other"]).default("strength"), tags: z.array(workoutTagSchema).default([]), machine: z.string().optional(), notes: z.string().optional() }, async (args) => createExerciseCatalogItem(args.name, args.kind, args.tags, args.machine, args.notes))
+  registerJsonTool(server, "create_exercise_catalog_item", "Create a reusable, tagged exercise or machine in the exercise catalog. This creates a GUID for future workout logs; it does not log a workout. trackingMode is required: sets_reps_weight for reps/sets/weight, or duration_distance for duration/distance. Tags may include plyometric, upper, lower, core, rehab, and cardio.", { name: z.string().min(1), kind: z.enum(["strength", "cardio", "mobility", "other"]).default("strength"), trackingMode: workoutTrackingModeSchema, tags: z.array(workoutTagSchema).default([]), machine: z.string().optional(), notes: z.string().optional() }, async (args) => createExerciseCatalogItem(args.name, args.kind, args.trackingMode, args.tags, args.machine, args.notes))
   registerJsonTool(server, "delete_exercise_catalog_item", "Delete one exercise or machine from the catalog by GUID. Historical workouts are not deleted or modified; unlinked history remains readable.", { id: z.string().uuid() }, async ({ id }) => deleteExerciseCatalogItem(id))
   registerJsonTool(server, "list_catalog_items", "List reusable recipe and food catalog items. Use this before logging food by reference or before creating a new catalog item to avoid duplicates.", { query: z.string().optional() }, async (args) => listCatalogItems(args.query))
   registerJsonTool(server, "get_catalog_item", "Get one reusable recipe or food catalog item by GUID.", { id: z.string().min(1) }, async ({ id }) => getCatalogItem(id))
@@ -146,11 +155,11 @@ function registerJsonTool<T extends z.ZodRawShape>(server: McpServer, name: stri
     const started = performance.now()
     try {
       const result = await handler(args)
-      console.log(JSON.stringify({ event: "mcp_tool", tool: name, ok: true, durationMs: Math.round(performance.now() - started) }))
+      logger.info("mcp_tool", { tool: name, ok: true, durationMs: Math.round(performance.now() - started) })
       return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      console.log(JSON.stringify({ event: "mcp_tool", tool: name, ok: false, durationMs: Math.round(performance.now() - started), error: message }))
+      logger.error("mcp_tool", { tool: name, ok: false, durationMs: Math.round(performance.now() - started), error: message })
       return { isError: true, content: [{ type: "text" as const, text: message }] }
     }
   }) as never)
@@ -167,6 +176,10 @@ async function getItems() {
   await recipesDb.read()
   recipesDb.data.items ??= []
   return [...recipesDb.data.items].sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id))
+}
+
+function logMutation(operation: string, entity: string, before: unknown, after: unknown) {
+  logger.info("mutation", { operation, entity, before, after })
 }
 
 async function listCatalogItems(query?: string) {
@@ -189,6 +202,7 @@ async function createCatalogItem(name: string, serving: string, nutrients: Recor
   const item: RecipeItem = { id: crypto.randomUUID(), name, serving, nutrients, notes, createdAt: now, updatedAt: now }
   recipesDb.data.items.unshift(item)
   await recipesDb.write()
+  logMutation("create", "recipe_catalog_item", undefined, item)
   return item
 }
 
@@ -197,6 +211,7 @@ async function upsertNutrition(date: string, nutrients: Record<string, number>, 
   const existing = db.data.nutrition[date]
   db.data.nutrition[date] = { date, nutrients: { ...(existing?.nutrients ?? {}), ...nutrients }, notes: notes ?? existing?.notes, updatedAt: new Date().toISOString() }
   await db.write()
+  logMutation("upsert", "nutrition", existing, db.data.nutrition[date])
   return db.data.nutrition[date]
 }
 
@@ -206,7 +221,24 @@ async function listExerciseCatalog(query?: string) {
   const items = [...exercisesDb.data.items].sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id))
   const needle = query?.trim().toLowerCase()
   if (!needle) return items
-  return items.filter((item) => [item.id, item.name, item.kind, item.machine, item.notes].join(" ").toLowerCase().includes(needle))
+  return items.filter((item) => [item.id, item.name, item.kind, item.trackingMode, item.machine, item.notes].join(" ").toLowerCase().includes(needle))
+}
+
+async function migrateExerciseCatalog() {
+  await exercisesDb.read()
+  exercisesDb.data.items ??= []
+  const before = structuredClone(exercisesDb.data.items)
+  let changed = false
+  for (const item of exercisesDb.data.items as Array<ExerciseItem & { trackingMode?: WorkoutTrackingMode }>) {
+    if (!item.trackingMode) {
+      item.trackingMode = item.kind === "cardio" ? "duration_distance" : "sets_reps_weight"
+      changed = true
+    }
+  }
+  if (changed) {
+    await exercisesDb.write()
+    logMutation("migrate", "exercise_catalog", before, exercisesDb.data.items)
+  }
 }
 
 async function getExerciseCatalogItem(id: string) {
@@ -215,42 +247,50 @@ async function getExerciseCatalogItem(id: string) {
   return item
 }
 
-async function createExerciseCatalogItem(name: string, kind: ExerciseItem["kind"], tags: WorkoutTag[], machine?: string, notes?: string) {
+async function createExerciseCatalogItem(name: string, kind: ExerciseItem["kind"], trackingMode: WorkoutTrackingMode, tags: WorkoutTag[], machine?: string, notes?: string) {
   await exercisesDb.read()
   exercisesDb.data.items ??= []
   const now = new Date().toISOString()
-  const item: ExerciseItem = { id: crypto.randomUUID(), name, kind, tags, machine, notes, createdAt: now, updatedAt: now }
+  const item: ExerciseItem = { id: crypto.randomUUID(), name, kind, trackingMode, tags, machine, notes, createdAt: now, updatedAt: now }
   exercisesDb.data.items.unshift(item)
   await exercisesDb.write()
+  logMutation("create", "exercise_catalog_item", undefined, item)
   return item
 }
 
 async function deleteExerciseCatalogItem(id: string) {
   await exercisesDb.read()
   exercisesDb.data.items ??= []
+  const deleted = exercisesDb.data.items.find((item) => item.id === id)
   const before = exercisesDb.data.items.length
   exercisesDb.data.items = exercisesDb.data.items.filter((item) => item.id !== id)
   await exercisesDb.write()
+  logMutation("delete", "exercise_catalog_item", deleted, undefined)
   return { deleted: before - exercisesDb.data.items.length, id, historicalWorkoutsPreserved: true }
 }
 
-async function upsertWorkout(args: { id?: string; date: string; category?: string; trackingMode?: WorkoutTrackingMode; machine?: string; workout: string; exerciseId?: string; sets: WorkoutSet[]; notes?: string }) {
+async function upsertWorkout(args: { id?: string; date: string; category?: string; machine?: string; workout: string; exerciseId: string; sets: WorkoutSet[]; notes?: string }) {
   await db.read()
+  await getExerciseCatalogItem(args.exerciseId)
   const id = args.id || crypto.randomUUID()
-  const entry: WorkoutEntry = { id, date: args.date, category: args.category, trackingMode: args.trackingMode, machine: args.machine, workout: args.workout, exerciseId: args.exerciseId, sets: args.sets, notes: args.notes, updatedAt: new Date().toISOString() }
+  const existing = db.data.workouts.find((item) => item.id === id)
+  const entry: WorkoutEntry = { id, date: args.date, category: args.category, machine: args.machine, workout: args.workout, exerciseId: args.exerciseId, sets: args.sets, notes: args.notes, updatedAt: new Date().toISOString() }
   const index = db.data.workouts.findIndex((item) => item.id === id)
   if (index >= 0) db.data.workouts[index] = entry
   else db.data.workouts.unshift(entry)
   db.data.workouts.sort((a, b) => b.date.localeCompare(a.date) || b.updatedAt.localeCompare(a.updatedAt))
   await db.write()
+  logMutation("upsert", "workout", existing, entry)
   return entry
 }
 
 async function deleteWorkout(id: string) {
   await db.read()
+  const deleted = db.data.workouts.find((item) => item.id === id)
   const before = db.data.workouts.length
   db.data.workouts = db.data.workouts.filter((item) => item.id !== id)
   await db.write()
+  logMutation("delete", "workout", deleted, undefined)
   return { deleted: before - db.data.workouts.length }
 }
 

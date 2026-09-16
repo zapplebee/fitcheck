@@ -8,9 +8,9 @@ type NutritionEntry = { date: string; nutrients: Record<string, number>; notes?:
 type WorkoutSet = { reps?: number; weight?: number; durationMinutes?: number; distance?: number; notes?: string }
 type WorkoutTag = "plyometric" | "upper" | "lower" | "core" | "rehab" | "cardio"
 type WorkoutTrackingMode = "sets_reps_weight" | "duration_distance"
-type WorkoutEntry = { id: string; date: string; category?: string; trackingMode?: WorkoutTrackingMode; machine?: string; workout: string; exerciseId?: string; sets: WorkoutSet[]; notes?: string; updatedAt: string }
+type WorkoutEntry = { id: string; date: string; category?: string; machine?: string; workout: string; exerciseId?: string; sets: WorkoutSet[]; notes?: string; updatedAt: string }
 type RecipeItem = { id: string; name: string; serving: string; nutrients: Record<string, number>; notes?: string; createdAt: string; updatedAt: string }
-type ExerciseItem = { id: string; name: string; kind: "strength" | "cardio" | "mobility" | "other"; tags?: WorkoutTag[]; machine?: string; notes?: string; createdAt: string; updatedAt: string }
+type ExerciseItem = { id: string; name: string; kind: "strength" | "cardio" | "mobility" | "other"; trackingMode: WorkoutTrackingMode; tags?: WorkoutTag[]; machine?: string; notes?: string; createdAt: string; updatedAt: string }
 type State = { nutrition: Record<string, NutritionEntry>; workouts: WorkoutEntry[] }
 
 Chart.register(LineController, LineElement, PointElement, LinearScale, CategoryScale, Tooltip)
@@ -41,6 +41,14 @@ function FitcheckApp() {
         setState(nextState)
         setExercises(nextExercises)
         setStatus(`Loaded ${nextExercises.length} catalog exercise${nextExercises.length === 1 ? "" : "s"}.`)
+      }).catch((error) => setStatus(error instanceof Error ? error.message : String(error)))
+      return
+    }
+    if (dayDate) {
+      Promise.all([loadState(), loadExercises()]).then(([nextState, nextExercises]) => {
+        setState(nextState)
+        setExercises(nextExercises)
+        setStatus(`Loaded ${dayDate}.`)
       }).catch((error) => setStatus(error instanceof Error ? error.message : String(error)))
       return
     }
@@ -86,7 +94,7 @@ function FitcheckApp() {
   }
 
   if (dayDate) {
-    return <DayDetail date={dayDate} state={state} status={status} />
+    return <DayDetail date={dayDate} state={state} exercises={exercises} status={status} />
   }
 
   const days = nutritionDays(state)
@@ -169,12 +177,12 @@ type ExerciseSummary = { key: string; id?: string; name: string; kind: string; m
 
 function exerciseSummaries(exercises: ExerciseItem[], workouts: WorkoutEntry[]) {
   const summaries = new Map<string, ExerciseSummary>()
-  for (const exercise of exercises) summaries.set(`catalog:${exercise.id}`, { key: `catalog:${exercise.id}`, id: exercise.id, name: exercise.name, kind: exercise.kind, machine: exercise.machine, tags: [...(exercise.tags ?? [])], workouts: 0 })
+  for (const exercise of exercises) summaries.set(`catalog:${exercise.id}`, { key: `catalog:${exercise.id}`, id: exercise.id, name: exercise.name, kind: exercise.kind, machine: exercise.machine, tags: [...(exercise.tags ?? [])], trackingMode: exercise.trackingMode, workouts: 0 })
   for (const workout of workouts) {
     const catalogMatch = workout.exerciseId ? exercises.find((exercise) => exercise.id === workout.exerciseId) : exercises.find((exercise) => exercise.name.toLowerCase() === workout.workout.toLowerCase() && (exercise.machine ?? "").toLowerCase() === (workout.machine ?? "").toLowerCase())
     const key = catalogMatch ? `catalog:${catalogMatch.id}` : `legacy:${workout.workout.toLowerCase()}|${(workout.machine ?? "").toLowerCase()}`
     const existing = summaries.get(key) ?? { key, name: workout.workout, kind: workout.category ?? "legacy", machine: workout.machine, tags: [], workouts: 0 }
-    existing.trackingMode ??= workout.trackingMode ?? inferTrackingMode(workout)
+    existing.trackingMode ??= catalogMatch?.trackingMode ?? inferTrackingMode(workout)
     existing.workouts += 1
     existing.maxSets = Math.max(existing.maxSets ?? 0, workout.sets.length)
     for (const set of workout.sets) {
@@ -220,7 +228,7 @@ function FitnessCalendar(props: { state: State }) {
   return <DayPicker mode="single" timeZone="America/Chicago" defaultMonth={dateFromKey(first)} startMonth={dateFromKey(first)} endMonth={dateFromKey(today)} numberOfMonths={monthsBetween(first, today) + 1} hideNavigation fixedWeeks showOutsideDays={false} components={{ DayButton }} />
 }
 
-function DayDetail(props: { date: string; state: State; status: string }) {
+function DayDetail(props: { date: string; state: State; exercises: ExerciseItem[]; status: string }) {
   const nutrition = props.state.nutrition[props.date]
   const workouts = props.state.workouts.filter((workout) => workout.date === props.date)
   return (
@@ -244,7 +252,7 @@ function DayDetail(props: { date: string; state: State; status: string }) {
         </section>
         <section class="panel">
           <p class="label">workout details</p>
-          {workouts.length ? <div class="workout-detail-list">{workouts.map((workout) => <WorkoutDetail workout={workout} />)}</div> : <p class="muted">No workouts logged for this day.</p>}
+          {workouts.length ? <div class="workout-detail-list">{workouts.map((workout) => <WorkoutDetail workout={workout} exercises={props.exercises} />)}</div> : <p class="muted">No workouts logged for this day.</p>}
         </section>
       </div>
       <p class={props.status.toLowerCase().includes("error") ? "status error" : "status"}>{props.status}</p>
@@ -252,11 +260,12 @@ function DayDetail(props: { date: string; state: State; status: string }) {
   )
 }
 
-function WorkoutDetail(props: { workout: WorkoutEntry }) {
+function WorkoutDetail(props: { workout: WorkoutEntry; exercises: ExerciseItem[] }) {
+  const trackingMode = props.exercises.find((exercise) => exercise.id === props.workout.exerciseId)?.trackingMode ?? inferTrackingMode(props.workout)
   return (
     <article class="workout-detail">
       <h3>{props.workout.workout}</h3>
-      <p class="muted">{props.workout.category ?? "uncategorized"} · {props.workout.machine ?? "no machine"} · {props.workout.trackingMode ?? inferTrackingMode(props.workout)}</p>
+      <p class="muted">{props.workout.category ?? "uncategorized"} · {props.workout.machine ?? "no machine"} · {trackingMode}</p>
       {props.workout.sets.length ? <ol class="set-list">{props.workout.sets.map((set, index) => <li><strong>set {index + 1}</strong><span>{formatSet(set)}</span></li>)}</ol> : <p class="muted">No set details.</p>}
       {props.workout.notes ? <p class="notes">{props.workout.notes}</p> : null}
     </article>
@@ -415,7 +424,7 @@ function formatSet(set: WorkoutSet) {
 }
 
 function inferTrackingMode(workout: WorkoutEntry): WorkoutTrackingMode {
-  return workout.trackingMode ?? (workout.sets.some((set) => typeof set.durationMinutes === "number" || typeof set.distance === "number") && !workout.sets.some((set) => typeof set.reps === "number" || typeof set.weight === "number") ? "duration_distance" : "sets_reps_weight")
+  return workout.sets.some((set) => typeof set.durationMinutes === "number" || typeof set.distance === "number") && !workout.sets.some((set) => typeof set.reps === "number" || typeof set.weight === "number") ? "duration_distance" : "sets_reps_weight"
 }
 
 const mount = document.getElementById("fitcheck-app")
