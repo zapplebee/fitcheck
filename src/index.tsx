@@ -9,14 +9,17 @@ import { z } from "zod"
 
 type NutritionEntry = { date: string; nutrients: Record<string, number>; notes?: string; updatedAt: string }
 type WorkoutSet = { reps?: number; weight?: number; durationMinutes?: number; distance?: number; notes?: string }
-type WorkoutEntry = { id: string; date: string; category?: string; machine?: string; workout: string; sets: WorkoutSet[]; notes?: string; updatedAt: string }
+type WorkoutEntry = { id: string; date: string; category?: string; machine?: string; workout: string; exerciseId?: string; sets: WorkoutSet[]; notes?: string; updatedAt: string }
 type RecipeItem = { id: string; name: string; serving: string; nutrients: Record<string, number>; notes?: string; createdAt: string; updatedAt: string }
+type ExerciseItem = { id: string; name: string; kind: "strength" | "cardio" | "mobility" | "other"; machine?: string; notes?: string; createdAt: string; updatedAt: string }
 type LogDbSchema = { nutrition: Record<string, NutritionEntry>; workouts: WorkoutEntry[]; clients: Record<string, { clientId: string; clientName?: string; createdAt: string }> }
 type RecipeDbSchema = { items: RecipeItem[] }
+type ExerciseDbSchema = { items: ExerciseItem[] }
 
 const app = new Hono()
 const dataPath = process.env.DATA_PATH ?? "./data/state.json"
 const recipesDataPath = process.env.RECIPES_DATA_PATH ?? "./data/recipes.json"
+const exercisesDataPath = process.env.EXERCISES_DATA_PATH ?? "./data/exercises.json"
 const publicBaseUrl = process.env.PUBLIC_BASE_URL ?? "https://fitcheck.dev.prettybird.zapplebee.online"
 const accessToken = process.env.FITCHECK_ACCESS_TOKEN ?? "fitcheck-dev-token"
 const githubToken = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN
@@ -24,8 +27,11 @@ const githubRepository = process.env.GITHUB_REPOSITORY ?? "zapplebee/fitcheck"
 const port = Number(process.env.PORT ?? "3000")
 await mkdir(dirname(dataPath), { recursive: true })
 await mkdir(dirname(recipesDataPath), { recursive: true })
+await mkdir(dirname(exercisesDataPath), { recursive: true })
 const db = await JSONFilePreset<LogDbSchema>(dataPath, { nutrition: {}, workouts: [], clients: {} })
 const recipesDb = await JSONFilePreset<RecipeDbSchema>(recipesDataPath, { items: [] })
+const exercisesDb = await JSONFilePreset<ExerciseDbSchema>(exercisesDataPath, { items: [] })
+await exercisesDb.write()
 
 app.use("*", async (c, next) => {
   const started = performance.now()
@@ -35,6 +41,7 @@ app.use("*", async (c, next) => {
 
 app.get("/", (c) => c.html(<Page />))
 app.get("/recipes", (c) => c.html(<Page title="Recipes" />))
+app.get("/exercises", (c) => c.html(<Page title="Exercises" />))
 app.get("/days/:date", (c) => c.html(<Page title={c.req.param("date")} />))
 app.get("/client.js", async (c) => c.body(await Bun.file("./public/client.js").text(), 200, { "content-type": "application/javascript; charset=utf-8", "cache-control": "no-cache" }))
 app.get("/health", (c) => c.json({ ok: true, service: "fitcheck" }))
@@ -66,6 +73,7 @@ app.post("/token", (c) => c.json({ access_token: accessToken, token_type: "Beare
 app.get("/api/state", async (c) => c.json(await getState()))
 app.get("/api/summary", async (c) => c.json(await summary()))
 app.get("/api/recipes", async (c) => c.json(await getItems()))
+app.get("/api/exercises", async (c) => c.json(await listExerciseCatalog()))
 
 app.use("/mcp", async (c, next) => {
   const auth = c.req.header("authorization")
@@ -100,7 +108,7 @@ function Page(props: { title?: string } = {}) {
             <p class="eyebrow">fitcheck / mcp body ledger</p>
             <h1>Fitcheck.</h1>
             <p class="lede">Today, rolling nutrition, and training pattern.</p>
-            <nav class="nav"><a href="/">dashboard</a><a href="/recipes">recipes</a></nav>
+            <nav class="nav"><a href="/">dashboard</a><a href="/recipes">recipes</a><a href="/exercises">exercises</a></nav>
             <div class="rule" />
             <div id="fitcheck-app" class="widget-shell"><p>Fitcheck loading...</p></div>
           </section>
@@ -116,8 +124,11 @@ function createMcpServer(): McpServer {
   registerJsonTool(server, "get_state", "Return all tracked nutrition and workouts.", {}, async () => getState())
   registerJsonTool(server, "get_summary", "Return rolling nutrition averages and recent workout summaries.", {}, async () => summary())
   registerJsonTool(server, "upsert_nutrition", "Upsert nutrition attributes for one day. Nutrients are expandable keys such as calories, protein, carbs, fat, fiber, sodium, etc.", { date: dateSchema, nutrients: z.record(z.string().min(1), z.number()), notes: z.string().optional() }, async (args) => upsertNutrition(args.date, args.nutrients, args.notes))
-  registerJsonTool(server, "upsert_workout", "Upsert a workout entry for a day by optional id. Use category such as upper, lower, cardio, mobility, full-body. Sets may include reps, weight, durationMinutes, distance, and notes.", { id: z.string().optional(), date: dateSchema, category: z.string().optional(), machine: z.string().optional(), workout: z.string().min(1), sets: z.array(workoutSetSchema).default([]), notes: z.string().optional() }, async (args) => upsertWorkout(args))
+  registerJsonTool(server, "upsert_workout", "Upsert a workout entry for a day by optional id. For cataloged exercise tracking, include exerciseId from list_exercise_catalog. Existing logs remain valid without it. Use category such as upper, lower, cardio, mobility, full-body. Sets may include reps, weight, durationMinutes, distance, and notes.", { id: z.string().optional(), date: dateSchema, category: z.string().optional(), machine: z.string().optional(), workout: z.string().min(1), exerciseId: z.string().uuid().optional(), sets: z.array(workoutSetSchema).default([]), notes: z.string().optional() }, async (args) => upsertWorkout(args))
   registerJsonTool(server, "delete_workout", "Delete one workout by id.", { id: z.string().min(1) }, async ({ id }) => deleteWorkout(id))
+  registerJsonTool(server, "list_exercise_catalog", "List cataloged exercises and machines with their GUIDs. Use this to identify an exerciseId before logging a workout and to avoid duplicate exercise definitions.", { query: z.string().optional() }, async (args) => listExerciseCatalog(args.query))
+  registerJsonTool(server, "get_exercise_catalog_item", "Get one cataloged exercise or machine by GUID, including its tracking kind.", { id: z.string().uuid() }, async ({ id }) => getExerciseCatalogItem(id))
+  registerJsonTool(server, "create_exercise_catalog_item", "Create a reusable exercise or machine in the exercise catalog. This creates a GUID for future workout logs; it does not log a workout.", { name: z.string().min(1), kind: z.enum(["strength", "cardio", "mobility", "other"]).default("strength"), machine: z.string().optional(), notes: z.string().optional() }, async (args) => createExerciseCatalogItem(args.name, args.kind, args.machine, args.notes))
   registerJsonTool(server, "list_catalog_items", "List reusable recipe and food catalog items. Use this before logging food by reference or before creating a new catalog item to avoid duplicates.", { query: z.string().optional() }, async (args) => listCatalogItems(args.query))
   registerJsonTool(server, "get_catalog_item", "Get one reusable recipe or food catalog item by GUID.", { id: z.string().min(1) }, async ({ id }) => getCatalogItem(id))
   registerJsonTool(server, "create_catalog_item", "Create a reusable recipe or food catalog item with a generated GUID and nutrition-label values. This only stores the definition for review in /recipes; it does not log a meal or change daily nutrition totals.", { name: z.string().min(1), serving: z.string().min(1).default("1 serving"), nutrients: z.record(z.string().min(1), z.number()), notes: z.string().optional() }, async (args) => createCatalogItem(args.name, args.serving, args.nutrients, args.notes))
@@ -186,10 +197,35 @@ async function upsertNutrition(date: string, nutrients: Record<string, number>, 
   return db.data.nutrition[date]
 }
 
-async function upsertWorkout(args: { id?: string; date: string; category?: string; machine?: string; workout: string; sets: WorkoutSet[]; notes?: string }) {
+async function listExerciseCatalog(query?: string) {
+  await exercisesDb.read()
+  exercisesDb.data.items ??= []
+  const items = [...exercisesDb.data.items].sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id))
+  const needle = query?.trim().toLowerCase()
+  if (!needle) return items
+  return items.filter((item) => [item.id, item.name, item.kind, item.machine, item.notes].join(" ").toLowerCase().includes(needle))
+}
+
+async function getExerciseCatalogItem(id: string) {
+  const item = (await listExerciseCatalog()).find((candidate) => candidate.id === id)
+  if (!item) throw new Error(`Exercise catalog item not found: ${id}`)
+  return item
+}
+
+async function createExerciseCatalogItem(name: string, kind: ExerciseItem["kind"], machine?: string, notes?: string) {
+  await exercisesDb.read()
+  exercisesDb.data.items ??= []
+  const now = new Date().toISOString()
+  const item: ExerciseItem = { id: crypto.randomUUID(), name, kind, machine, notes, createdAt: now, updatedAt: now }
+  exercisesDb.data.items.unshift(item)
+  await exercisesDb.write()
+  return item
+}
+
+async function upsertWorkout(args: { id?: string; date: string; category?: string; machine?: string; workout: string; exerciseId?: string; sets: WorkoutSet[]; notes?: string }) {
   await db.read()
   const id = args.id || crypto.randomUUID()
-  const entry: WorkoutEntry = { id, date: args.date, category: args.category, machine: args.machine, workout: args.workout, sets: args.sets, notes: args.notes, updatedAt: new Date().toISOString() }
+  const entry: WorkoutEntry = { id, date: args.date, category: args.category, machine: args.machine, workout: args.workout, exerciseId: args.exerciseId, sets: args.sets, notes: args.notes, updatedAt: new Date().toISOString() }
   const index = db.data.workouts.findIndex((item) => item.id === id)
   if (index >= 0) db.data.workouts[index] = entry
   else db.data.workouts.unshift(entry)
@@ -306,6 +342,18 @@ const styles = `
   .nutrient-row { display: flex; justify-content: space-between; gap: 10px; padding: 3px 0; border-top: 1px solid #050505; font-size: 0.86rem; }
   .calorie-row { font-size: 1.3rem; font-weight: 900; border-top-width: 0; }
   .recipe-notes { margin: 0; color: #222; font-size: 0.78rem; line-height: 1.25; }
+  .exercise-page { display: grid; gap: 10px; }
+  .exercise-intro { margin: 0; font-size: 0.8rem; line-height: 1.3; }
+  .exercise-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+  .exercise-card { display: grid; gap: 8px; padding: 12px; border: 2px solid var(--line); background: var(--paper); box-shadow: 5px 5px 0 var(--line); }
+  .exercise-card h2 { font-size: 1.45rem; }
+  .exercise-card-head { display: flex; justify-content: space-between; align-items: start; gap: 8px; }
+  .exercise-card-head .label { margin-bottom: 4px; }
+  .workout-count { flex: none; padding: 4px 5px; background: var(--paper-deep); font: 0.65rem ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; }
+  .pr-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; border-top: 3px solid var(--line); padding-top: 8px; }
+  .pr-grid div { display: grid; gap: 3px; }
+  .pr-grid span { color: var(--ink-soft); font-size: 0.66rem; text-transform: uppercase; }
+  .pr-grid strong { font-size: 1.25rem; }
   .day-detail { display: grid; gap: 12px; }
   .back-link { width: fit-content; color: var(--ink); text-decoration: none; border: 2px solid var(--line); padding: 6px 8px; background: var(--paper-deep); font-size: 0.78rem; letter-spacing: 0.08em; text-transform: uppercase; }
   .back-link:hover, .back-link:focus-visible { color: var(--paper); background: var(--ink); outline: none; }

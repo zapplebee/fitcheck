@@ -6,17 +6,20 @@ import { render } from "hono/jsx/dom"
 
 type NutritionEntry = { date: string; nutrients: Record<string, number>; notes?: string; updatedAt: string }
 type WorkoutSet = { reps?: number; weight?: number; durationMinutes?: number; distance?: number; notes?: string }
-type WorkoutEntry = { id: string; date: string; category?: string; machine?: string; workout: string; sets: WorkoutSet[]; notes?: string; updatedAt: string }
+type WorkoutEntry = { id: string; date: string; category?: string; machine?: string; workout: string; exerciseId?: string; sets: WorkoutSet[]; notes?: string; updatedAt: string }
 type RecipeItem = { id: string; name: string; serving: string; nutrients: Record<string, number>; notes?: string; createdAt: string; updatedAt: string }
+type ExerciseItem = { id: string; name: string; kind: "strength" | "cardio" | "mobility" | "other"; machine?: string; notes?: string; createdAt: string; updatedAt: string }
 type State = { nutrition: Record<string, NutritionEntry>; workouts: WorkoutEntry[] }
 
 Chart.register(LineController, LineElement, PointElement, LinearScale, CategoryScale, Tooltip)
 
 function FitcheckApp() {
   const isRecipes = location.pathname === "/recipes"
+  const isExercises = location.pathname === "/exercises"
   const dayDate = location.pathname.match(/^\/days\/(\d{4}-\d{2}-\d{2})$/)?.[1]
   const [state, setState] = useState<State>({ nutrition: {}, workouts: [] })
   const [recipes, setRecipes] = useState<RecipeItem[]>([])
+  const [exercises, setExercises] = useState<ExerciseItem[]>([])
   const [filter, setFilter] = useState("")
   const [status, setStatus] = useState("Loading dashboard...")
   const chartRef = useRef<HTMLCanvasElement>(null)
@@ -30,14 +33,22 @@ function FitcheckApp() {
       }).catch((error) => setStatus(error instanceof Error ? error.message : String(error)))
       return
     }
+    if (isExercises) {
+      Promise.all([loadState(), loadExercises()]).then(([nextState, nextExercises]) => {
+        setState(nextState)
+        setExercises(nextExercises)
+        setStatus(`Loaded ${nextExercises.length} catalog exercise${nextExercises.length === 1 ? "" : "s"}.`)
+      }).catch((error) => setStatus(error instanceof Error ? error.message : String(error)))
+      return
+    }
     loadState().then((next) => {
       setState(next)
       setStatus(dayDate ? `Loaded ${dayDate}.` : "Ready. Data is written through MCP.")
     }).catch((error) => setStatus(error instanceof Error ? error.message : String(error)))
-  }, [dayDate, isRecipes])
+  }, [dayDate, isExercises, isRecipes])
 
   useEffect(() => {
-    if (isRecipes || dayDate || !chartRef.current) return
+    if (isRecipes || isExercises || dayDate || !chartRef.current) return
     chartInstance.current?.destroy()
     const days = nutritionDays(state)
     chartInstance.current = new Chart(chartRef.current, {
@@ -51,7 +62,7 @@ function FitcheckApp() {
       },
       options: { responsive: true, maintainAspectRatio: false, plugins: { tooltip: { mode: "index" } }, scales: { y: { beginAtZero: true } } },
     })
-  }, [dayDate, isRecipes, state])
+  }, [dayDate, isExercises, isRecipes, state])
 
   if (isRecipes) {
     const filteredRecipes = recipes.filter((item) => recipeText(item).includes(filter.trim().toLowerCase()))
@@ -65,6 +76,10 @@ function FitcheckApp() {
         <p class={status.toLowerCase().includes("error") ? "status error" : "status"}>{status}</p>
       </div>
     )
+  }
+
+  if (isExercises) {
+    return <ExerciseCatalog exercises={exercises} workouts={state.workouts} filter={filter} setFilter={setFilter} status={status} />
   }
 
   if (dayDate) {
@@ -126,6 +141,55 @@ function FitcheckApp() {
 
 function Metric(props: { label: string; value: string }) {
   return <section class="card"><p class="label">{props.label}</p><p class="metric">{props.value}</p></section>
+}
+
+function ExerciseCatalog(props: { exercises: ExerciseItem[]; workouts: WorkoutEntry[]; filter: string; setFilter: (value: string) => void; status: string }) {
+  const summaries = exerciseSummaries(props.exercises, props.workouts).filter((item) => exerciseText(item).includes(props.filter.trim().toLowerCase()))
+  return (
+    <div class="exercise-page">
+      <input class="recipe-filter" value={props.filter} onInput={(event) => props.setFilter((event.target as HTMLInputElement).value)} placeholder="Filter exercises, machines, kinds, GUIDs..." />
+      <p class="muted exercise-intro">Personal records are calculated from all existing workout entries. Legacy workouts without an exercise GUID are included by exercise and machine name.</p>
+      <div class="exercise-grid">
+        {summaries.map((item) => <ExerciseCard summary={item} />)}
+      </div>
+      {summaries.length === 0 ? <p class="muted">No exercises match.</p> : null}
+      <p class={props.status.toLowerCase().includes("error") ? "status error" : "status"}>{props.status}</p>
+    </div>
+  )
+}
+
+type ExerciseSummary = { key: string; id?: string; name: string; kind: string; machine?: string; workouts: number; maxReps?: number; maxSets?: number; maxWeight?: number }
+
+function exerciseSummaries(exercises: ExerciseItem[], workouts: WorkoutEntry[]) {
+  const summaries = new Map<string, ExerciseSummary>()
+  for (const exercise of exercises) summaries.set(`catalog:${exercise.id}`, { key: `catalog:${exercise.id}`, id: exercise.id, name: exercise.name, kind: exercise.kind, machine: exercise.machine, workouts: 0 })
+  for (const workout of workouts) {
+    const catalogMatch = workout.exerciseId ? exercises.find((exercise) => exercise.id === workout.exerciseId) : exercises.find((exercise) => exercise.name.toLowerCase() === workout.workout.toLowerCase() && (exercise.machine ?? "").toLowerCase() === (workout.machine ?? "").toLowerCase())
+    const key = catalogMatch ? `catalog:${catalogMatch.id}` : `legacy:${workout.workout.toLowerCase()}|${(workout.machine ?? "").toLowerCase()}`
+    const existing = summaries.get(key) ?? { key, name: workout.workout, kind: workout.category ?? "legacy", machine: workout.machine, workouts: 0 }
+    existing.workouts += 1
+    existing.maxSets = Math.max(existing.maxSets ?? 0, workout.sets.length)
+    for (const set of workout.sets) {
+      if (typeof set.reps === "number") existing.maxReps = Math.max(existing.maxReps ?? 0, set.reps)
+      if (typeof set.weight === "number") existing.maxWeight = Math.max(existing.maxWeight ?? 0, set.weight)
+    }
+    summaries.set(key, existing)
+  }
+  return [...summaries.values()].sort((a, b) => a.name.localeCompare(b.name))
+}
+
+function ExerciseCard(props: { summary: ExerciseSummary }) {
+  return (
+    <article class="exercise-card">
+      <div class="exercise-card-head"><div><p class="label">{props.summary.kind}{props.summary.machine ? ` / ${props.summary.machine}` : ""}</p><h2>{props.summary.name}</h2></div><span class="workout-count">{props.summary.workouts} log{props.summary.workouts === 1 ? "" : "s"}</span></div>
+      {props.summary.id ? <div class="label-id">{props.summary.id}</div> : <div class="label-id">legacy exercise / inferred from workout history</div>}
+      <div class="pr-grid">
+        <div><span>max reps</span><strong>{formatPr(props.summary.maxReps)}</strong></div>
+        <div><span>max sets</span><strong>{formatPr(props.summary.maxSets)}</strong></div>
+        <div><span>max weight</span><strong>{formatPr(props.summary.maxWeight, " lb")}</strong></div>
+      </div>
+    </article>
+  )
 }
 
 function FitnessCalendar(props: { state: State }) {
@@ -219,6 +283,13 @@ async function loadRecipes(): Promise<RecipeItem[]> {
   return data
 }
 
+async function loadExercises(): Promise<ExerciseItem[]> {
+  const response = await fetch("/api/exercises")
+  const data = await response.json()
+  if (!response.ok) throw new Error(data?.error ?? `Request failed: ${response.status}`)
+  return data
+}
+
 function nutritionDays(state: State) {
   return Object.values(state.nutrition).sort((a, b) => a.date.localeCompare(b.date)).slice(-30)
 }
@@ -287,6 +358,14 @@ function monthsBetween(start: string, end: string) {
 
 function formatValue(value: number | undefined, suffix = "") {
   return typeof value === "number" ? `${Math.round(value)}${suffix}` : "--"
+}
+
+function formatPr(value: number | undefined, suffix = "") {
+  return typeof value === "number" && value > 0 ? `${value}${suffix}` : "--"
+}
+
+function exerciseText(item: ExerciseSummary) {
+  return [item.id, item.name, item.kind, item.machine].join(" ").toLowerCase()
 }
 
 function formatRatio(value: number | undefined) {
