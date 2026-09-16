@@ -9,7 +9,9 @@ import { z } from "zod"
 
 type NutritionEntry = { date: string; nutrients: Record<string, number>; notes?: string; updatedAt: string }
 type WorkoutSet = { reps?: number; weight?: number; durationMinutes?: number; distance?: number; notes?: string }
-type WorkoutEntry = { id: string; date: string; category?: string; machine?: string; workout: string; exerciseId?: string; sets: WorkoutSet[]; notes?: string; updatedAt: string }
+type WorkoutTag = "plyometric" | "upper" | "lower" | "core" | "rehab" | "cardio"
+type WorkoutTrackingMode = "sets_reps_weight" | "duration_distance"
+type WorkoutEntry = { id: string; date: string; category?: string; tags?: WorkoutTag[]; trackingMode?: WorkoutTrackingMode; machine?: string; workout: string; exerciseId?: string; sets: WorkoutSet[]; notes?: string; updatedAt: string }
 type RecipeItem = { id: string; name: string; serving: string; nutrients: Record<string, number>; notes?: string; createdAt: string; updatedAt: string }
 type ExerciseItem = { id: string; name: string; kind: "strength" | "cardio" | "mobility" | "other"; machine?: string; notes?: string; createdAt: string; updatedAt: string }
 type LogDbSchema = { nutrition: Record<string, NutritionEntry>; workouts: WorkoutEntry[]; clients: Record<string, { clientId: string; clientName?: string; createdAt: string }> }
@@ -124,11 +126,12 @@ function createMcpServer(): McpServer {
   registerJsonTool(server, "get_state", "Return all tracked nutrition and workouts.", {}, async () => getState())
   registerJsonTool(server, "get_summary", "Return rolling nutrition averages and recent workout summaries.", {}, async () => summary())
   registerJsonTool(server, "upsert_nutrition", "Upsert nutrition attributes for one day. Nutrients are expandable keys such as calories, protein, carbs, fat, fiber, sodium, etc.", { date: dateSchema, nutrients: z.record(z.string().min(1), z.number()), notes: z.string().optional() }, async (args) => upsertNutrition(args.date, args.nutrients, args.notes))
-  registerJsonTool(server, "upsert_workout", "Upsert a workout entry for a day by optional id. For cataloged exercise tracking, include exerciseId from list_exercise_catalog. Existing logs remain valid without it. Use category such as upper, lower, cardio, mobility, full-body. Sets may include reps, weight, durationMinutes, distance, and notes.", { id: z.string().optional(), date: dateSchema, category: z.string().optional(), machine: z.string().optional(), workout: z.string().min(1), exerciseId: z.string().uuid().optional(), sets: z.array(workoutSetSchema).default([]), notes: z.string().optional() }, async (args) => upsertWorkout(args))
+  registerJsonTool(server, "upsert_workout", "Upsert a workout entry for a day by optional id. For cataloged exercise tracking, include exerciseId from list_exercise_catalog. Existing logs remain valid without it. Choose exactly one trackingMode for new workouts: sets_reps_weight for reps/sets/weight, or duration_distance for duration/distance. Tags may include plyometric, upper, lower, core, rehab, and cardio. Use category such as upper, lower, cardio, mobility, full-body. Sets may include reps, weight, durationMinutes, distance, and notes.", { id: z.string().optional(), date: dateSchema, category: z.string().optional(), tags: z.array(workoutTagSchema).default([]), trackingMode: workoutTrackingModeSchema.optional(), machine: z.string().optional(), workout: z.string().min(1), exerciseId: z.string().uuid().optional(), sets: z.array(workoutSetSchema).default([]), notes: z.string().optional() }, async (args) => upsertWorkout(args))
   registerJsonTool(server, "delete_workout", "Delete one workout by id.", { id: z.string().min(1) }, async ({ id }) => deleteWorkout(id))
   registerJsonTool(server, "list_exercise_catalog", "List cataloged exercises and machines with their GUIDs. Use this to identify an exerciseId before logging a workout and to avoid duplicate exercise definitions.", { query: z.string().optional() }, async (args) => listExerciseCatalog(args.query))
   registerJsonTool(server, "get_exercise_catalog_item", "Get one cataloged exercise or machine by GUID, including its tracking kind.", { id: z.string().uuid() }, async ({ id }) => getExerciseCatalogItem(id))
   registerJsonTool(server, "create_exercise_catalog_item", "Create a reusable exercise or machine in the exercise catalog. This creates a GUID for future workout logs; it does not log a workout.", { name: z.string().min(1), kind: z.enum(["strength", "cardio", "mobility", "other"]).default("strength"), machine: z.string().optional(), notes: z.string().optional() }, async (args) => createExerciseCatalogItem(args.name, args.kind, args.machine, args.notes))
+  registerJsonTool(server, "delete_exercise_catalog_item", "Delete one exercise or machine from the catalog by GUID. Historical workouts are not deleted or modified; unlinked history remains readable.", { id: z.string().uuid() }, async ({ id }) => deleteExerciseCatalogItem(id))
   registerJsonTool(server, "list_catalog_items", "List reusable recipe and food catalog items. Use this before logging food by reference or before creating a new catalog item to avoid duplicates.", { query: z.string().optional() }, async (args) => listCatalogItems(args.query))
   registerJsonTool(server, "get_catalog_item", "Get one reusable recipe or food catalog item by GUID.", { id: z.string().min(1) }, async ({ id }) => getCatalogItem(id))
   registerJsonTool(server, "create_catalog_item", "Create a reusable recipe or food catalog item with a generated GUID and nutrition-label values. This only stores the definition for review in /recipes; it does not log a meal or change daily nutrition totals.", { name: z.string().min(1), serving: z.string().min(1).default("1 serving"), nutrients: z.record(z.string().min(1), z.number()), notes: z.string().optional() }, async (args) => createCatalogItem(args.name, args.serving, args.nutrients, args.notes))
@@ -222,10 +225,19 @@ async function createExerciseCatalogItem(name: string, kind: ExerciseItem["kind"
   return item
 }
 
-async function upsertWorkout(args: { id?: string; date: string; category?: string; machine?: string; workout: string; exerciseId?: string; sets: WorkoutSet[]; notes?: string }) {
+async function deleteExerciseCatalogItem(id: string) {
+  await exercisesDb.read()
+  exercisesDb.data.items ??= []
+  const before = exercisesDb.data.items.length
+  exercisesDb.data.items = exercisesDb.data.items.filter((item) => item.id !== id)
+  await exercisesDb.write()
+  return { deleted: before - exercisesDb.data.items.length, id, historicalWorkoutsPreserved: true }
+}
+
+async function upsertWorkout(args: { id?: string; date: string; category?: string; tags?: WorkoutTag[]; trackingMode?: WorkoutTrackingMode; machine?: string; workout: string; exerciseId?: string; sets: WorkoutSet[]; notes?: string }) {
   await db.read()
   const id = args.id || crypto.randomUUID()
-  const entry: WorkoutEntry = { id, date: args.date, category: args.category, machine: args.machine, workout: args.workout, exerciseId: args.exerciseId, sets: args.sets, notes: args.notes, updatedAt: new Date().toISOString() }
+  const entry: WorkoutEntry = { id, date: args.date, category: args.category, tags: args.tags, trackingMode: args.trackingMode, machine: args.machine, workout: args.workout, exerciseId: args.exerciseId, sets: args.sets, notes: args.notes, updatedAt: new Date().toISOString() }
   const index = db.data.workouts.findIndex((item) => item.id === id)
   if (index >= 0) db.data.workouts[index] = entry
   else db.data.workouts.unshift(entry)
@@ -286,6 +298,8 @@ async function githubIssueRequest(method: "GET" | "POST", path: string, body?: u
 }
 
 const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
+const workoutTagSchema = z.enum(["plyometric", "upper", "lower", "core", "rehab", "cardio"])
+const workoutTrackingModeSchema = z.enum(["sets_reps_weight", "duration_distance"])
 const workoutSetSchema = z.object({ reps: z.number().optional(), weight: z.number().optional(), durationMinutes: z.number().optional(), distance: z.number().optional(), notes: z.string().optional() })
 
 const styles = `
@@ -344,6 +358,11 @@ const styles = `
   .recipe-notes { margin: 0; color: #222; font-size: 0.78rem; line-height: 1.25; }
   .exercise-page { display: grid; gap: 10px; }
   .exercise-intro { margin: 0; font-size: 0.8rem; line-height: 1.3; }
+  .tag-filter { display: flex; flex-wrap: wrap; gap: 6px; }
+  .tag-button { color: var(--ink); background: var(--paper); border: 2px solid var(--line); padding: 6px 8px; font-size: 0.7rem; text-transform: uppercase; }
+  .tag-button.selected, .tag-button:hover, .tag-button:focus-visible { color: var(--paper); background: var(--ink); outline: none; }
+  .tag-list { display: flex; flex-wrap: wrap; gap: 4px; }
+  .tag-list span { padding: 3px 5px; color: var(--ink); background: var(--paper-deep); border: 1px solid rgba(9, 35, 69, 0.35); font: 0.62rem ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; }
   .exercise-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
   .exercise-card { display: grid; gap: 8px; padding: 12px; border: 2px solid var(--line); background: var(--paper); box-shadow: 5px 5px 0 var(--line); }
   .exercise-card h2 { font-size: 1.45rem; }

@@ -6,7 +6,9 @@ import { render } from "hono/jsx/dom"
 
 type NutritionEntry = { date: string; nutrients: Record<string, number>; notes?: string; updatedAt: string }
 type WorkoutSet = { reps?: number; weight?: number; durationMinutes?: number; distance?: number; notes?: string }
-type WorkoutEntry = { id: string; date: string; category?: string; machine?: string; workout: string; exerciseId?: string; sets: WorkoutSet[]; notes?: string; updatedAt: string }
+type WorkoutTag = "plyometric" | "upper" | "lower" | "core" | "rehab" | "cardio"
+type WorkoutTrackingMode = "sets_reps_weight" | "duration_distance"
+type WorkoutEntry = { id: string; date: string; category?: string; tags?: WorkoutTag[]; trackingMode?: WorkoutTrackingMode; machine?: string; workout: string; exerciseId?: string; sets: WorkoutSet[]; notes?: string; updatedAt: string }
 type RecipeItem = { id: string; name: string; serving: string; nutrients: Record<string, number>; notes?: string; createdAt: string; updatedAt: string }
 type ExerciseItem = { id: string; name: string; kind: "strength" | "cardio" | "mobility" | "other"; machine?: string; notes?: string; createdAt: string; updatedAt: string }
 type State = { nutrition: Record<string, NutritionEntry>; workouts: WorkoutEntry[] }
@@ -21,6 +23,7 @@ function FitcheckApp() {
   const [recipes, setRecipes] = useState<RecipeItem[]>([])
   const [exercises, setExercises] = useState<ExerciseItem[]>([])
   const [filter, setFilter] = useState("")
+  const [selectedTag, setSelectedTag] = useState<WorkoutTag | "all">("all")
   const [status, setStatus] = useState("Loading dashboard...")
   const chartRef = useRef<HTMLCanvasElement>(null)
   const chartInstance = useRef<Chart | null>(null)
@@ -79,7 +82,7 @@ function FitcheckApp() {
   }
 
   if (isExercises) {
-    return <ExerciseCatalog exercises={exercises} workouts={state.workouts} filter={filter} setFilter={setFilter} status={status} />
+    return <ExerciseCatalog exercises={exercises} workouts={state.workouts} filter={filter} setFilter={setFilter} selectedTag={selectedTag} setSelectedTag={setSelectedTag} status={status} />
   }
 
   if (dayDate) {
@@ -143,11 +146,15 @@ function Metric(props: { label: string; value: string }) {
   return <section class="card"><p class="label">{props.label}</p><p class="metric">{props.value}</p></section>
 }
 
-function ExerciseCatalog(props: { exercises: ExerciseItem[]; workouts: WorkoutEntry[]; filter: string; setFilter: (value: string) => void; status: string }) {
-  const summaries = exerciseSummaries(props.exercises, props.workouts).filter((item) => exerciseText(item).includes(props.filter.trim().toLowerCase()))
+function ExerciseCatalog(props: { exercises: ExerciseItem[]; workouts: WorkoutEntry[]; filter: string; setFilter: (value: string) => void; selectedTag: WorkoutTag | "all"; setSelectedTag: (value: WorkoutTag | "all") => void; status: string }) {
+  const summaries = exerciseSummaries(props.exercises, props.workouts).filter((item) => exerciseText(item).includes(props.filter.trim().toLowerCase()) && (props.selectedTag === "all" || item.tags.includes(props.selectedTag)))
   return (
     <div class="exercise-page">
       <input class="recipe-filter" value={props.filter} onInput={(event) => props.setFilter((event.target as HTMLInputElement).value)} placeholder="Filter exercises, machines, kinds, GUIDs..." />
+      <div class="tag-filter" aria-label="Filter workouts by tag">
+        {workoutTags.map((tag) => <button type="button" class={props.selectedTag === tag ? "tag-button selected" : "tag-button"} onClick={() => props.setSelectedTag(tag)}>{tag}</button>)}
+        <button type="button" class={props.selectedTag === "all" ? "tag-button selected" : "tag-button"} onClick={() => props.setSelectedTag("all")}>all</button>
+      </div>
       <p class="muted exercise-intro">Personal records are calculated from all existing workout entries. Legacy workouts without an exercise GUID are included by exercise and machine name.</p>
       <div class="exercise-grid">
         {summaries.map((item) => <ExerciseCard summary={item} />)}
@@ -158,20 +165,24 @@ function ExerciseCatalog(props: { exercises: ExerciseItem[]; workouts: WorkoutEn
   )
 }
 
-type ExerciseSummary = { key: string; id?: string; name: string; kind: string; machine?: string; workouts: number; maxReps?: number; maxSets?: number; maxWeight?: number }
+type ExerciseSummary = { key: string; id?: string; name: string; kind: string; machine?: string; tags: WorkoutTag[]; trackingMode?: WorkoutTrackingMode; workouts: number; maxReps?: number; maxSets?: number; maxWeight?: number; maxDuration?: number; maxDistance?: number }
 
 function exerciseSummaries(exercises: ExerciseItem[], workouts: WorkoutEntry[]) {
   const summaries = new Map<string, ExerciseSummary>()
-  for (const exercise of exercises) summaries.set(`catalog:${exercise.id}`, { key: `catalog:${exercise.id}`, id: exercise.id, name: exercise.name, kind: exercise.kind, machine: exercise.machine, workouts: 0 })
+  for (const exercise of exercises) summaries.set(`catalog:${exercise.id}`, { key: `catalog:${exercise.id}`, id: exercise.id, name: exercise.name, kind: exercise.kind, machine: exercise.machine, tags: [], workouts: 0 })
   for (const workout of workouts) {
     const catalogMatch = workout.exerciseId ? exercises.find((exercise) => exercise.id === workout.exerciseId) : exercises.find((exercise) => exercise.name.toLowerCase() === workout.workout.toLowerCase() && (exercise.machine ?? "").toLowerCase() === (workout.machine ?? "").toLowerCase())
     const key = catalogMatch ? `catalog:${catalogMatch.id}` : `legacy:${workout.workout.toLowerCase()}|${(workout.machine ?? "").toLowerCase()}`
-    const existing = summaries.get(key) ?? { key, name: workout.workout, kind: workout.category ?? "legacy", machine: workout.machine, workouts: 0 }
+    const existing = summaries.get(key) ?? { key, name: workout.workout, kind: workout.category ?? "legacy", machine: workout.machine, tags: [], workouts: 0 }
+    existing.trackingMode ??= workout.trackingMode ?? inferTrackingMode(workout)
+    for (const tag of workout.tags ?? []) if (!existing.tags.includes(tag)) existing.tags.push(tag)
     existing.workouts += 1
     existing.maxSets = Math.max(existing.maxSets ?? 0, workout.sets.length)
     for (const set of workout.sets) {
       if (typeof set.reps === "number") existing.maxReps = Math.max(existing.maxReps ?? 0, set.reps)
       if (typeof set.weight === "number") existing.maxWeight = Math.max(existing.maxWeight ?? 0, set.weight)
+      if (typeof set.durationMinutes === "number") existing.maxDuration = Math.max(existing.maxDuration ?? 0, set.durationMinutes)
+      if (typeof set.distance === "number") existing.maxDistance = Math.max(existing.maxDistance ?? 0, set.distance)
     }
     summaries.set(key, existing)
   }
@@ -183,11 +194,8 @@ function ExerciseCard(props: { summary: ExerciseSummary }) {
     <article class="exercise-card">
       <div class="exercise-card-head"><div><p class="label">{props.summary.kind}{props.summary.machine ? ` / ${props.summary.machine}` : ""}</p><h2>{props.summary.name}</h2></div><span class="workout-count">{props.summary.workouts} log{props.summary.workouts === 1 ? "" : "s"}</span></div>
       {props.summary.id ? <div class="label-id">{props.summary.id}</div> : <div class="label-id">legacy exercise / inferred from workout history</div>}
-      <div class="pr-grid">
-        <div><span>max reps</span><strong>{formatPr(props.summary.maxReps)}</strong></div>
-        <div><span>max sets</span><strong>{formatPr(props.summary.maxSets)}</strong></div>
-        <div><span>max weight</span><strong>{formatPr(props.summary.maxWeight, " lb")}</strong></div>
-      </div>
+      {props.summary.tags.length ? <div class="tag-list">{props.summary.tags.map((tag) => <span>{tag}</span>)}</div> : null}
+      {props.summary.trackingMode === "duration_distance" ? <div class="pr-grid"><div><span>max duration</span><strong>{formatPr(props.summary.maxDuration, " min")}</strong></div><div><span>max distance</span><strong>{formatPr(props.summary.maxDistance)}</strong></div></div> : <div class="pr-grid"><div><span>max reps</span><strong>{formatPr(props.summary.maxReps)}</strong></div><div><span>max sets</span><strong>{formatPr(props.summary.maxSets)}</strong></div><div><span>max weight</span><strong>{formatPr(props.summary.maxWeight, " lb")}</strong></div></div>}
     </article>
   )
 }
@@ -249,7 +257,8 @@ function WorkoutDetail(props: { workout: WorkoutEntry }) {
   return (
     <article class="workout-detail">
       <h3>{props.workout.workout}</h3>
-      <p class="muted">{props.workout.category ?? "uncategorized"} · {props.workout.machine ?? "no machine"}</p>
+      <p class="muted">{props.workout.category ?? "uncategorized"} · {props.workout.machine ?? "no machine"} · {props.workout.trackingMode ?? inferTrackingMode(props.workout)}</p>
+      {props.workout.tags?.length ? <div class="tag-list">{props.workout.tags.map((tag) => <span>{tag}</span>)}</div> : null}
       {props.workout.sets.length ? <ol class="set-list">{props.workout.sets.map((set, index) => <li><strong>set {index + 1}</strong><span>{formatSet(set)}</span></li>)}</ol> : <p class="muted">No set details.</p>}
       {props.workout.notes ? <p class="notes">{props.workout.notes}</p> : null}
     </article>
@@ -365,8 +374,10 @@ function formatPr(value: number | undefined, suffix = "") {
 }
 
 function exerciseText(item: ExerciseSummary) {
-  return [item.id, item.name, item.kind, item.machine].join(" ").toLowerCase()
+  return [item.id, item.name, item.kind, item.machine, item.tags.join(" ")].join(" ").toLowerCase()
 }
+
+const workoutTags: WorkoutTag[] = ["plyometric", "upper", "lower", "core", "rehab", "cardio"]
 
 function formatRatio(value: number | undefined) {
   return typeof value === "number" ? value.toFixed(3) : "--"
@@ -403,6 +414,10 @@ function formatSet(set: WorkoutSet) {
   if (typeof set.distance === "number") parts.push(`${set.distance} mi`)
   if (set.notes) parts.push(set.notes)
   return parts.join(" · ") || "logged"
+}
+
+function inferTrackingMode(workout: WorkoutEntry): WorkoutTrackingMode {
+  return workout.trackingMode ?? (workout.sets.some((set) => typeof set.durationMinutes === "number" || typeof set.distance === "number") && !workout.sets.some((set) => typeof set.reps === "number" || typeof set.weight === "number") ? "duration_distance" : "sets_reps_weight")
 }
 
 const mount = document.getElementById("fitcheck-app")
