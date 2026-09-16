@@ -8,9 +8,9 @@ type NutritionEntry = { date: string; nutrients: Record<string, number>; notes?:
 type WorkoutSet = { reps?: number; weight?: number; durationMinutes?: number; distance?: number; notes?: string }
 type WorkoutTag = "plyometric" | "upper" | "lower" | "core" | "rehab" | "cardio"
 type WorkoutTrackingMode = "sets_reps_weight" | "duration_distance"
-type WorkoutEntry = { id: string; date: string; category?: string; tags?: WorkoutTag[]; trackingMode?: WorkoutTrackingMode; machine?: string; workout: string; exerciseId?: string; sets: WorkoutSet[]; notes?: string; updatedAt: string }
+type WorkoutEntry = { id: string; date: string; category?: string; trackingMode?: WorkoutTrackingMode; machine?: string; workout: string; exerciseId?: string; sets: WorkoutSet[]; notes?: string; updatedAt: string }
 type RecipeItem = { id: string; name: string; serving: string; nutrients: Record<string, number>; notes?: string; createdAt: string; updatedAt: string }
-type ExerciseItem = { id: string; name: string; kind: "strength" | "cardio" | "mobility" | "other"; machine?: string; notes?: string; createdAt: string; updatedAt: string }
+type ExerciseItem = { id: string; name: string; kind: "strength" | "cardio" | "mobility" | "other"; tags?: WorkoutTag[]; machine?: string; notes?: string; createdAt: string; updatedAt: string }
 type State = { nutrition: Record<string, NutritionEntry>; workouts: WorkoutEntry[] }
 
 Chart.register(LineController, LineElement, PointElement, LinearScale, CategoryScale, Tooltip)
@@ -169,13 +169,12 @@ type ExerciseSummary = { key: string; id?: string; name: string; kind: string; m
 
 function exerciseSummaries(exercises: ExerciseItem[], workouts: WorkoutEntry[]) {
   const summaries = new Map<string, ExerciseSummary>()
-  for (const exercise of exercises) summaries.set(`catalog:${exercise.id}`, { key: `catalog:${exercise.id}`, id: exercise.id, name: exercise.name, kind: exercise.kind, machine: exercise.machine, tags: [], workouts: 0 })
+  for (const exercise of exercises) summaries.set(`catalog:${exercise.id}`, { key: `catalog:${exercise.id}`, id: exercise.id, name: exercise.name, kind: exercise.kind, machine: exercise.machine, tags: [...(exercise.tags ?? [])], workouts: 0 })
   for (const workout of workouts) {
     const catalogMatch = workout.exerciseId ? exercises.find((exercise) => exercise.id === workout.exerciseId) : exercises.find((exercise) => exercise.name.toLowerCase() === workout.workout.toLowerCase() && (exercise.machine ?? "").toLowerCase() === (workout.machine ?? "").toLowerCase())
     const key = catalogMatch ? `catalog:${catalogMatch.id}` : `legacy:${workout.workout.toLowerCase()}|${(workout.machine ?? "").toLowerCase()}`
     const existing = summaries.get(key) ?? { key, name: workout.workout, kind: workout.category ?? "legacy", machine: workout.machine, tags: [], workouts: 0 }
     existing.trackingMode ??= workout.trackingMode ?? inferTrackingMode(workout)
-    for (const tag of workout.tags ?? []) if (!existing.tags.includes(tag)) existing.tags.push(tag)
     existing.workouts += 1
     existing.maxSets = Math.max(existing.maxSets ?? 0, workout.sets.length)
     for (const set of workout.sets) {
@@ -258,7 +257,6 @@ function WorkoutDetail(props: { workout: WorkoutEntry }) {
     <article class="workout-detail">
       <h3>{props.workout.workout}</h3>
       <p class="muted">{props.workout.category ?? "uncategorized"} · {props.workout.machine ?? "no machine"} · {props.workout.trackingMode ?? inferTrackingMode(props.workout)}</p>
-      {props.workout.tags?.length ? <div class="tag-list">{props.workout.tags.map((tag) => <span>{tag}</span>)}</div> : null}
       {props.workout.sets.length ? <ol class="set-list">{props.workout.sets.map((set, index) => <li><strong>set {index + 1}</strong><span>{formatSet(set)}</span></li>)}</ol> : <p class="muted">No set details.</p>}
       {props.workout.notes ? <p class="notes">{props.workout.notes}</p> : null}
     </article>

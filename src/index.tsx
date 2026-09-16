@@ -11,9 +11,9 @@ type NutritionEntry = { date: string; nutrients: Record<string, number>; notes?:
 type WorkoutSet = { reps?: number; weight?: number; durationMinutes?: number; distance?: number; notes?: string }
 type WorkoutTag = "plyometric" | "upper" | "lower" | "core" | "rehab" | "cardio"
 type WorkoutTrackingMode = "sets_reps_weight" | "duration_distance"
-type WorkoutEntry = { id: string; date: string; category?: string; tags?: WorkoutTag[]; trackingMode?: WorkoutTrackingMode; machine?: string; workout: string; exerciseId?: string; sets: WorkoutSet[]; notes?: string; updatedAt: string }
+type WorkoutEntry = { id: string; date: string; category?: string; trackingMode?: WorkoutTrackingMode; machine?: string; workout: string; exerciseId?: string; sets: WorkoutSet[]; notes?: string; updatedAt: string }
 type RecipeItem = { id: string; name: string; serving: string; nutrients: Record<string, number>; notes?: string; createdAt: string; updatedAt: string }
-type ExerciseItem = { id: string; name: string; kind: "strength" | "cardio" | "mobility" | "other"; machine?: string; notes?: string; createdAt: string; updatedAt: string }
+type ExerciseItem = { id: string; name: string; kind: "strength" | "cardio" | "mobility" | "other"; tags: WorkoutTag[]; machine?: string; notes?: string; createdAt: string; updatedAt: string }
 type LogDbSchema = { nutrition: Record<string, NutritionEntry>; workouts: WorkoutEntry[]; clients: Record<string, { clientId: string; clientName?: string; createdAt: string }> }
 type RecipeDbSchema = { items: RecipeItem[] }
 type ExerciseDbSchema = { items: ExerciseItem[] }
@@ -126,11 +126,11 @@ function createMcpServer(): McpServer {
   registerJsonTool(server, "get_state", "Return all tracked nutrition and workouts.", {}, async () => getState())
   registerJsonTool(server, "get_summary", "Return rolling nutrition averages and recent workout summaries.", {}, async () => summary())
   registerJsonTool(server, "upsert_nutrition", "Upsert nutrition attributes for one day. Nutrients are expandable keys such as calories, protein, carbs, fat, fiber, sodium, etc.", { date: dateSchema, nutrients: z.record(z.string().min(1), z.number()), notes: z.string().optional() }, async (args) => upsertNutrition(args.date, args.nutrients, args.notes))
-  registerJsonTool(server, "upsert_workout", "Upsert a workout entry for a day by optional id. For cataloged exercise tracking, include exerciseId from list_exercise_catalog. Existing logs remain valid without it. Choose exactly one trackingMode for new workouts: sets_reps_weight for reps/sets/weight, or duration_distance for duration/distance. Tags may include plyometric, upper, lower, core, rehab, and cardio. Use category such as upper, lower, cardio, mobility, full-body. Sets may include reps, weight, durationMinutes, distance, and notes.", { id: z.string().optional(), date: dateSchema, category: z.string().optional(), tags: z.array(workoutTagSchema).default([]), trackingMode: workoutTrackingModeSchema.optional(), machine: z.string().optional(), workout: z.string().min(1), exerciseId: z.string().uuid().optional(), sets: z.array(workoutSetSchema).default([]), notes: z.string().optional() }, async (args) => upsertWorkout(args))
+  registerJsonTool(server, "upsert_workout", "Upsert an activity log for a day by optional id. Include exerciseId from list_exercise_catalog to associate the log with a tagged catalog exercise. Choose exactly one trackingMode for new workouts: sets_reps_weight for reps/sets/weight, or duration_distance for duration/distance. Tags belong on the catalog exercise, not on this activity record. Use category such as upper, lower, cardio, mobility, full-body. Sets may include reps, weight, durationMinutes, distance, and notes.", { id: z.string().optional(), date: dateSchema, category: z.string().optional(), trackingMode: workoutTrackingModeSchema.optional(), machine: z.string().optional(), workout: z.string().min(1), exerciseId: z.string().uuid().optional(), sets: z.array(workoutSetSchema).default([]), notes: z.string().optional() }, async (args) => upsertWorkout(args))
   registerJsonTool(server, "delete_workout", "Delete one workout by id.", { id: z.string().min(1) }, async ({ id }) => deleteWorkout(id))
   registerJsonTool(server, "list_exercise_catalog", "List cataloged exercises and machines with their GUIDs. Use this to identify an exerciseId before logging a workout and to avoid duplicate exercise definitions.", { query: z.string().optional() }, async (args) => listExerciseCatalog(args.query))
   registerJsonTool(server, "get_exercise_catalog_item", "Get one cataloged exercise or machine by GUID, including its tracking kind.", { id: z.string().uuid() }, async ({ id }) => getExerciseCatalogItem(id))
-  registerJsonTool(server, "create_exercise_catalog_item", "Create a reusable exercise or machine in the exercise catalog. This creates a GUID for future workout logs; it does not log a workout.", { name: z.string().min(1), kind: z.enum(["strength", "cardio", "mobility", "other"]).default("strength"), machine: z.string().optional(), notes: z.string().optional() }, async (args) => createExerciseCatalogItem(args.name, args.kind, args.machine, args.notes))
+  registerJsonTool(server, "create_exercise_catalog_item", "Create a reusable, tagged exercise or machine in the exercise catalog. This creates a GUID for future workout logs; it does not log a workout. Tags may include plyometric, upper, lower, core, rehab, and cardio.", { name: z.string().min(1), kind: z.enum(["strength", "cardio", "mobility", "other"]).default("strength"), tags: z.array(workoutTagSchema).default([]), machine: z.string().optional(), notes: z.string().optional() }, async (args) => createExerciseCatalogItem(args.name, args.kind, args.tags, args.machine, args.notes))
   registerJsonTool(server, "delete_exercise_catalog_item", "Delete one exercise or machine from the catalog by GUID. Historical workouts are not deleted or modified; unlinked history remains readable.", { id: z.string().uuid() }, async ({ id }) => deleteExerciseCatalogItem(id))
   registerJsonTool(server, "list_catalog_items", "List reusable recipe and food catalog items. Use this before logging food by reference or before creating a new catalog item to avoid duplicates.", { query: z.string().optional() }, async (args) => listCatalogItems(args.query))
   registerJsonTool(server, "get_catalog_item", "Get one reusable recipe or food catalog item by GUID.", { id: z.string().min(1) }, async ({ id }) => getCatalogItem(id))
@@ -215,11 +215,11 @@ async function getExerciseCatalogItem(id: string) {
   return item
 }
 
-async function createExerciseCatalogItem(name: string, kind: ExerciseItem["kind"], machine?: string, notes?: string) {
+async function createExerciseCatalogItem(name: string, kind: ExerciseItem["kind"], tags: WorkoutTag[], machine?: string, notes?: string) {
   await exercisesDb.read()
   exercisesDb.data.items ??= []
   const now = new Date().toISOString()
-  const item: ExerciseItem = { id: crypto.randomUUID(), name, kind, machine, notes, createdAt: now, updatedAt: now }
+  const item: ExerciseItem = { id: crypto.randomUUID(), name, kind, tags, machine, notes, createdAt: now, updatedAt: now }
   exercisesDb.data.items.unshift(item)
   await exercisesDb.write()
   return item
@@ -234,10 +234,10 @@ async function deleteExerciseCatalogItem(id: string) {
   return { deleted: before - exercisesDb.data.items.length, id, historicalWorkoutsPreserved: true }
 }
 
-async function upsertWorkout(args: { id?: string; date: string; category?: string; tags?: WorkoutTag[]; trackingMode?: WorkoutTrackingMode; machine?: string; workout: string; exerciseId?: string; sets: WorkoutSet[]; notes?: string }) {
+async function upsertWorkout(args: { id?: string; date: string; category?: string; trackingMode?: WorkoutTrackingMode; machine?: string; workout: string; exerciseId?: string; sets: WorkoutSet[]; notes?: string }) {
   await db.read()
   const id = args.id || crypto.randomUUID()
-  const entry: WorkoutEntry = { id, date: args.date, category: args.category, tags: args.tags, trackingMode: args.trackingMode, machine: args.machine, workout: args.workout, exerciseId: args.exerciseId, sets: args.sets, notes: args.notes, updatedAt: new Date().toISOString() }
+  const entry: WorkoutEntry = { id, date: args.date, category: args.category, trackingMode: args.trackingMode, machine: args.machine, workout: args.workout, exerciseId: args.exerciseId, sets: args.sets, notes: args.notes, updatedAt: new Date().toISOString() }
   const index = db.data.workouts.findIndex((item) => item.id === id)
   if (index >= 0) db.data.workouts[index] = entry
   else db.data.workouts.unshift(entry)
